@@ -33,11 +33,10 @@ export interface SyncAdapter<T> {
   upsert(value: T): UpsertOutcome;
 
   /**
-   * Stable identity of a parsed record. Together with `prune`, this lets a full
-   * sync notice records that were deleted upstream. Omit both to keep deletions local.
+   * Deletes local records that were NOT touched since `passStartedAt` (ISO time), returning
+   * how many were removed. Every upsert stamps the record with its sync time, so after a
+   * complete full pass "not touched" means "deleted upstream" — even when the pass was spread
+   * over several runs. Omit to keep deletions local.
    */
-  keyOf?(value: T): string | number;
-
-  /** Deletes every local record whose key is not in `keep`; returns how many were removed. */
-  prune?(keep: ReadonlySet<string | number>): number;
+  prune?(passStartedAt: string): number;
 }

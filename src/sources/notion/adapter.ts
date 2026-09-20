@@ -101,7 +101,6 @@ export function createNotionAdapter(
     },
 
     upsert: upsertPage,
-    keyOf: (page) => page.id,
     prune: prunePages,
   };
 }

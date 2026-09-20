@@ -39,6 +39,14 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX IF NOT EXISTS idx_repos_stars ON repos(stars DESC);
   CREATE INDEX IF NOT EXISTS idx_notion_pages_edited ON notion_pages(lastEditedTime DESC);
   `,
+  // v3: resumable backfill — the state of a sync pass that did not finish in one run
+  `
+  ALTER TABLE sync_state ADD COLUMN passCursor TEXT;
+  ALTER TABLE sync_state ADD COLUMN passStartedAt TEXT;
+  ALTER TABLE sync_state ADD COLUMN passNewest TEXT;
+  ALTER TABLE sync_state ADD COLUMN passFull INTEGER;
+  ALTER TABLE sync_state ADD COLUMN passFetched INTEGER;
+  `,
 ];
 
 export function migrate(db: DatabaseSync): void {

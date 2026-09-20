@@ -101,7 +101,7 @@ describe('notion adapter', () => {
 
   it('a full sync deletes pages that no longer exist in Notion', async () => {
     getDb().exec(
-      "INSERT INTO notion_pages VALUES ('gone', 'Old', 'u', '2020-01-01T00:00:00.000Z', 'x')",
+      "INSERT INTO notion_pages VALUES ('gone', 'Old', 'u', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00Z')",
     );
     vi.stubGlobal(
       'fetch',

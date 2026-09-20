@@ -90,7 +90,7 @@ describe('github adapter', () => {
   });
 
   it('a full sync deletes repositories that no longer exist on GitHub', async () => {
-    getDb().exec("INSERT INTO repos VALUES (999, 'deleted-upstream', 1, 'x')");
+    getDb().exec("INSERT INTO repos VALUES (999, 'deleted-upstream', 1, '2020-01-01T00:00:00Z')");
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(jsonResponse([repo(1, '2026-03-02T00:00:00Z')])),

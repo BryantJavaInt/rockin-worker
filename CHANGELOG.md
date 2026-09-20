@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Format based on [Keep a
 ## [Unreleased]
 
 ### Added
+- Resumable backfill: a sync pass that exceeds the page budget saves its cursor and resumes on the next run, so large accounts finish in several runs instead of never advancing. Deletions are now detected with the pass start time instead of a set of seen keys, which also works across runs (`SyncAdapter.keyOf` is removed; `prune` takes the pass start time).
 - `sync --full` prunes records deleted upstream (optional `keyOf`/`prune` on `SyncAdapter`), only after a complete, error-free, uncapped run and never on an empty upstream response.
 - Worker mode: `sync --every 15m` with jitter and non-overlapping cycles; failing cycles are logged and do not stop the worker. `core/duration` and `core/sync/watch` are new pure, tested modules.
 - Graceful shutdown: SIGINT/SIGTERM finish the current cycle and close the MCP transport and database.

@@ -15,6 +15,8 @@ const rec = (id: number, at: string): Rec => ({ id, at });
 /** An in-memory adapter serving pre-baked pages, so the engine is tested with no network or source code. */
 function makeAdapter(pages: unknown[][], overrides: Partial<SyncAdapter<Rec>> = {}) {
   const store = new Map<number, Rec>();
+  // When each record was last upserted — the "sync stamp" a real store keeps in syncedAt.
+  const touched = new Map<number, string>();
   const cursors: Array<string | null> = [];
 
   const adapter: SyncAdapter<Rec> = {
@@ -36,13 +38,13 @@ function makeAdapter(pages: unknown[][], overrides: Partial<SyncAdapter<Rec>> = 
     upsert(value) {
       const existed = store.has(value.id);
       store.set(value.id, value);
+      touched.set(value.id, new Date().toISOString());
       return existed ? 'updated' : 'inserted';
     },
-    keyOf: (value) => value.id,
-    prune(keep) {
+    prune(passStartedAt) {
       let removed = 0;
       for (const id of [...store.keys()]) {
-        if (!keep.has(id)) {
+        if ((touched.get(id) ?? '') < passStartedAt) {
           store.delete(id);
           removed++;
         }
@@ -52,7 +54,7 @@ function makeAdapter(pages: unknown[][], overrides: Partial<SyncAdapter<Rec>> = 
     ...overrides,
   };
 
-  return { adapter, store, cursors };
+  return { adapter, store, touched, cursors };
 }
 
 const noLog = () => {};
@@ -141,7 +143,6 @@ describe('runSync: deletions', () => {
 
   it('leaves deletions alone for adapters that do not opt in', async () => {
     const { adapter, store } = makeAdapter([[rec(1, '2026-03-03T00:00:00Z')]], {
-      keyOf: undefined,
       prune: undefined,
     });
     stale(store);
@@ -237,7 +238,7 @@ describe('runSync', () => {
     expect(summary.errors).toBe(1);
     expect(summary.lastError).toBe('upstream exploded');
     expect(store.size).toBe(1);
-    expect(getSyncState('fake')).toEqual({ watermark: null, lastSuccessAt: null });
+    expect(getSyncState('fake')).toEqual({ watermark: null, lastSuccessAt: null, pass: null });
   });
 
   it('skips malformed records without failing the run', async () => {
@@ -311,5 +312,106 @@ describe('runSync', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(runSync(adapter, { logRun: failing })).resolves.toMatchObject({ errors: 0 });
     warn.mockRestore();
+  });
+});
+
+describe('runSync: resumable backfill', () => {
+  beforeEach(resetDb);
+
+  const threePages = () => [
+    [rec(1, '2026-03-05T00:00:00Z')],
+    [rec(2, '2026-03-04T00:00:00Z')],
+    [rec(3, '2026-03-03T00:00:00Z')],
+  ];
+
+  it('saves a cursor when the page budget runs out and resumes from it on the next run', async () => {
+    const { adapter, store, cursors } = makeAdapter(threePages());
+
+    const first = await runSync(adapter, { maxPages: 1, logRun: noLog });
+    expect(first).toMatchObject({ capped: true, resumed: false, fetched: 1 });
+    expect(getSyncState('fake').pass).toMatchObject({ cursor: '1', full: false, fetched: 1 });
+    expect(getSyncState('fake').watermark).toBeNull(); // not advanced mid-pass
+
+    const second = await runSync(adapter, { maxPages: 1, logRun: noLog });
+    expect(second).toMatchObject({ capped: true, resumed: true, fetched: 1 });
+    expect(cursors).toEqual([null, '1']); // did NOT restart at page 1
+
+    const third = await runSync(adapter, { maxPages: 1, logRun: noLog });
+    expect(third).toMatchObject({ capped: false, resumed: true, fetched: 1 });
+    expect([...store.keys()].sort()).toEqual([1, 2, 3]);
+  });
+
+  it('moves the watermark to the newest record of the WHOLE pass only when it completes', async () => {
+    const { adapter } = makeAdapter(threePages());
+
+    await runSync(adapter, { maxPages: 2, logRun: noLog });
+    expect(getSyncState('fake').watermark).toBeNull();
+
+    await runSync(adapter, { maxPages: 2, logRun: noLog });
+    const state = getSyncState('fake');
+    expect(state.watermark).toBe('2026-03-05T00:00:00Z');
+    expect(state.pass).toBeNull();
+  });
+
+  it('a completed pass leaves the next incremental run to stop at the watermark', async () => {
+    const { adapter, cursors } = makeAdapter(threePages());
+    await runSync(adapter, { logRun: noLog });
+    cursors.length = 0;
+
+    const summary = await runSync(adapter, { logRun: noLog });
+
+    expect(summary.resumed).toBe(false);
+    expect(summary.fetched).toBe(1); // only the record at the watermark is revisited
+    expect(cursors).toEqual([null, '1']); // page 2 is fetched just to discover it is older
+  });
+
+  it('does not resume a pass started in the other mode (full vs incremental)', async () => {
+    const { adapter, cursors } = makeAdapter(threePages());
+    await runSync(adapter, { maxPages: 1, logRun: noLog }); // incremental pass, cursor '1'
+    cursors.length = 0;
+
+    const summary = await runSync(adapter, { full: true, maxPages: 1, logRun: noLog });
+
+    expect(summary.resumed).toBe(false);
+    expect(cursors).toEqual([null]);
+    expect(getSyncState('fake').pass).toMatchObject({ full: true, cursor: '1' });
+  });
+
+  it('keeps the saved cursor when a later run fails, so nothing is lost', async () => {
+    let fail = false;
+    const { adapter } = makeAdapter(threePages(), {
+      async fetchPage(cursor) {
+        if (fail) throw new Error('upstream down');
+        const index = cursor ? Number(cursor) : 0;
+        return {
+          records: threePages()[index] ?? [],
+          nextCursor: index + 1 < 3 ? String(index + 1) : null,
+        };
+      },
+    });
+    await runSync(adapter, { maxPages: 1, logRun: noLog });
+    const saved = getSyncState('fake').pass;
+    fail = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const summary = await runSync(adapter, { maxPages: 1, logRun: noLog });
+
+    expect(summary.errors).toBe(1);
+    expect(getSyncState('fake').pass).toEqual(saved);
+    warn.mockRestore();
+  });
+
+  it('a full pass spread over several runs prunes only what NO run touched', async () => {
+    const { adapter, store } = makeAdapter(threePages());
+    store.set(99, rec(99, '2020-01-01T00:00:00Z')); // deleted upstream: never touched
+
+    const one = await runSync(adapter, { full: true, maxPages: 1, logRun: noLog });
+    const two = await runSync(adapter, { full: true, maxPages: 1, logRun: noLog });
+    expect(one.deleted + two.deleted).toBe(0); // must not prune mid-pass
+
+    const three = await runSync(adapter, { full: true, maxPages: 1, logRun: noLog });
+
+    expect(three.deleted).toBe(1);
+    expect([...store.keys()].sort()).toEqual([1, 2, 3]); // records from EARLIER runs survive
   });
 });

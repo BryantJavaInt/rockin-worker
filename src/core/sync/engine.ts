@@ -13,7 +13,7 @@ export type SyncSummary = {
   fetched: number;
   inserted: number;
   updated: number;
-  /** Local records removed because they no longer exist upstream (full syncs only). */
+  /** Local records removed because they no longer exist upstream (complete full passes only). */
   deleted: number;
   /** Malformed upstream records that failed validation. */
   skipped: number;
@@ -21,8 +21,10 @@ export type SyncSummary = {
   lastError: string | null;
   apiCalls: number;
   durationMs: number;
-  /** True when the page budget ran out before reaching the watermark or the end of the data. */
+  /** True when the page budget ran out with data still upstream; the next run resumes from a saved cursor. */
   capped: boolean;
+  /** True when this run continued an unfinished pass instead of starting a new one. */
+  resumed: boolean;
   full: boolean;
   watermarkBefore: string | null;
   watermarkAfter: string | null;
@@ -35,7 +37,6 @@ type PageStats = {
   updated: number;
   skipped: number;
   newest: Newest | null;
-  keys: Array<string | number>;
 };
 
 export type SyncOptions = {
@@ -45,15 +46,25 @@ export type SyncOptions = {
   logRun?: (entry: RunLogEntry) => void;
 };
 
+const toNewest = (iso: string | null): Newest | null =>
+  iso !== null && !Number.isNaN(Date.parse(iso)) ? { ms: Date.parse(iso), iso } : null;
+
 export async function runSync<T>(
   adapter: SyncAdapter<T>,
   options: SyncOptions = {},
 ): Promise<SyncSummary> {
   const startedAt = new Date();
+  const full = options.full ?? false;
   const maxPages = options.maxPages ?? loadConfig().SYNC_MAX_PAGES;
   const previous = getSyncState(adapter.source);
-  const watermarkBefore = options.full ? null : previous.watermark;
+  const watermarkBefore = full ? null : previous.watermark;
   const watermarkMs = watermarkBefore ? Date.parse(watermarkBefore) : null;
+
+  // An unfinished pass resumes only in the mode it started in: a full pass must not be
+  // continued by an incremental run (or vice versa), because their stop rules differ.
+  const resumable = previous.pass !== null && previous.pass.full === full ? previous.pass : null;
+  const passStartedAt = resumable?.startedAt ?? startedAt.toISOString();
+  const fetchedBefore = resumable?.fetched ?? 0;
 
   const summary: SyncSummary = {
     source: adapter.source,
@@ -67,17 +78,17 @@ export async function runSync<T>(
     apiCalls: 0,
     durationMs: 0,
     capped: false,
-    full: options.full ?? false,
+    resumed: resumable !== null,
+    full,
     watermarkBefore: previous.watermark,
     watermarkAfter: previous.watermark,
   };
 
-  let cursor: string | null = null;
+  let cursor: string | null = resumable?.cursor ?? null;
   let pagesFetched = 0;
   let reachedWatermark = false;
   let exhausted = false;
-  let newest: Newest | null = null;
-  const seen = new Set<string | number>();
+  let newest: Newest | null = toNewest(resumable?.newest ?? null);
 
   while (pagesFetched < maxPages) {
     let page: Page;
@@ -94,7 +105,7 @@ export async function runSync<T>(
 
     // Page-local counters are merged only after COMMIT, so a rolled-back page
     // can never leave the summary claiming rows that were not written.
-    const local: PageStats = { fetched: 0, inserted: 0, updated: 0, skipped: 0, newest, keys: [] };
+    const local: PageStats = { fetched: 0, inserted: 0, updated: 0, skipped: 0, newest };
     let hitWatermark = false;
 
     try {
@@ -123,7 +134,6 @@ export async function runSync<T>(
             local.newest = { ms: modifiedMs, iso: parsed.modifiedAt };
           }
           local[adapter.upsert(parsed.value)]++;
-          if (adapter.keyOf) local.keys.push(adapter.keyOf(parsed.value));
         }
       });
     } catch (err) {
@@ -138,7 +148,6 @@ export async function runSync<T>(
     summary.updated += local.updated;
     summary.skipped += local.skipped;
     newest = local.newest;
-    for (const key of local.keys) seen.add(key);
 
     if (hitWatermark) {
       reachedWatermark = true;
@@ -151,20 +160,25 @@ export async function runSync<T>(
     cursor = page.nextCursor;
   }
 
-  summary.capped = summary.errors === 0 && !reachedWatermark && !exhausted;
+  // The pass finished only if we reached the watermark or the end of the data. Running out of
+  // page budget is not a failure: the pass is saved and resumed by the next run.
+  const complete = summary.errors === 0 && (reachedWatermark || exhausted);
+  summary.capped = summary.errors === 0 && !complete;
+  const passFetched = fetchedBefore + summary.fetched;
 
-  // Deletions: only a *complete* full sync has seen every upstream record, so only then
-  // is "not seen" equivalent to "deleted upstream". An empty result is refused outright —
-  // it is far more likely to be a scope or outage problem than an account with nothing in it.
+  // Deletions: only a *complete* full pass has touched every upstream record, so only then is
+  // "not touched since the pass began" equivalent to "deleted upstream". A pass that touched
+  // nothing is refused outright — far more likely a token-scope or outage problem than an
+  // account with nothing in it.
   const prune = adapter.prune?.bind(adapter);
-  if (options.full && prune && summary.errors === 0 && !summary.capped) {
-    if (seen.size === 0) {
+  if (complete && full && prune) {
+    if (passFetched === 0) {
       console.warn(
         `[${adapter.source}] full sync saw no records; refusing to prune the local store.`,
       );
     } else {
       try {
-        summary.deleted = withTransaction(() => prune(seen));
+        summary.deleted = withTransaction(() => prune(passStartedAt));
       } catch (err) {
         summary.errors++;
         summary.lastError = describeError(err);
@@ -173,22 +187,36 @@ export async function runSync<T>(
     }
   }
 
-  // Advance the watermark only on a complete, error-free run. If the page budget
-  // ran out (capped), the records we did not reach are OLDER than the newest one
-  // we saw — moving the watermark forward would skip them permanently.
   if (summary.errors === 0) {
-    const watermark = !summary.capped && newest ? newest.iso : previous.watermark;
-    saveSyncState(adapter.source, {
-      watermark,
-      lastSuccessAt: new Date().toISOString(),
-    });
-    summary.watermarkAfter = watermark;
+    const lastSuccessAt = new Date().toISOString();
+
+    if (complete) {
+      // The watermark only moves once the whole pass is done: records not yet reached are
+      // OLDER than the newest one seen, so advancing it earlier would skip them for good.
+      const watermark = newest?.iso ?? previous.watermark;
+      saveSyncState(adapter.source, { watermark, lastSuccessAt, pass: null });
+      summary.watermarkAfter = watermark;
+    } else if (cursor !== null) {
+      saveSyncState(adapter.source, {
+        watermark: previous.watermark,
+        lastSuccessAt,
+        pass: {
+          cursor,
+          startedAt: passStartedAt,
+          newest: newest?.iso ?? null,
+          full,
+          fetched: passFetched,
+        },
+      });
+    }
   }
+  // On error nothing is saved: the previous state (watermark and any saved cursor) stays, so
+  // the next run retries from the last known-good point. Committed pages are idempotent.
 
   if (summary.capped) {
     console.warn(
-      `[${adapter.source}] stopped after ${maxPages} pages with more data upstream; ` +
-        'watermark not advanced. Raise SYNC_MAX_PAGES to backfill.',
+      `[${adapter.source}] page budget (${maxPages}) reached with more data upstream; ` +
+        'progress saved — the next run resumes from where this one stopped.',
     );
   }
 

@@ -27,10 +27,10 @@ export function upsertPage(page: NotionPage): UpsertOutcome {
   return existedBefore ? 'updated' : 'inserted';
 }
 
-/** Removes pages that were not seen during a complete full sync (see pruneRepos). */
-export function prunePages(keep: ReadonlySet<string | number>): number {
+/** Removes pages not touched by the full pass that started at `passStartedAt`. */
+export function prunePages(passStartedAt: string): number {
   const { changes } = getDb()
-    .prepare('DELETE FROM notion_pages WHERE id NOT IN (SELECT value FROM json_each(?))')
-    .run(JSON.stringify([...keep]));
+    .prepare('DELETE FROM notion_pages WHERE syncedAt < ?')
+    .run(passStartedAt);
   return Number(changes);
 }

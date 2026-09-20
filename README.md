@@ -65,7 +65,7 @@ All configuration is environment variables, read from the process environment fi
 | `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Model used by `ask` and `eval` (`--model` overrides it per call). |
 | `DB_PATH` | `./data.db` | SQLite file. Use `:memory:` for a throwaway database. |
 | `LOG_DIR` | `./logs` | Where `sync-history.jsonl` (one JSON line per sync run) is written. |
-| `SYNC_MAX_PAGES` | `5` | Page budget per source per run. If it runs out before the data does, the run is flagged `capped` and the watermark is not advanced. |
+| `SYNC_MAX_PAGES` | `5` | Page budget per source per run. If it runs out before the data does, progress is saved and the next run resumes from the saved cursor. |
 
 ## Commands
 
@@ -119,11 +119,11 @@ The image runs as a non-root user and keeps its database and logs in the `/data`
 
 - **Incremental.** A per-source watermark lets a run stop paginating as soon as it reaches already-synced records.
 - **At-least-once, idempotent.** Records *equal* to the watermark are revisited on purpose (Notion timestamps have minute granularity, so a same-minute edit would otherwise be lost). Upserts are atomic `INSERT … ON CONFLICT DO UPDATE`.
-- **No silent data loss.** A `capped` or failed run never advances the watermark — doing so would skip the older, unseen records forever.
+- **Resumable backfill.** If the page budget runs out, the pass is saved (cursor, start time, newest record seen) and the next run continues from it — even across a worker restart. The watermark only moves when the whole pass completes; advancing it earlier would skip the older, unseen records forever. A pass only resumes in the mode it started in (full vs incremental).
 - **Transactional pages.** Each page commits or rolls back as a unit; the summary counts only committed rows.
 - **Validated input.** Every upstream record is parsed with Zod. One malformed record is skipped and counted; an unexpected response envelope aborts the run.
 - **Resilient HTTP.** Per-attempt timeouts; retries on 429/5xx/network errors with backoff + jitter, honoring `Retry-After` (seconds or HTTP-date) and GitHub's primary rate limit (`403` + `X-RateLimit-Reset`). A server-directed wait longer than 60 s makes the run fail fast instead of hanging.
-- **Deletions.** `--full` prunes records the upstream no longer has — only after a complete, error-free, uncapped run, and never when upstream returned nothing (that points to a token-scope or outage problem, not an empty account).
+- **Deletions.** A completed `--full` pass prunes records it never touched (every upsert stamps `syncedAt`, so "not touched since the pass began" means "deleted upstream"), even when the pass spanned several runs. It never prunes after an error or an unfinished pass, nor when the pass saw no records at all (that points to a token-scope or outage problem, not an empty account).
 - **Worker mode.** `--every` runs non-overlapping cycles with jitter; a failing cycle is logged and the worker carries on. SIGINT/SIGTERM let the cycle in flight finish, close the MCP transport and the database, then exit.
 - **Observable.** Every run appends one structured line to `logs/sync-history.jsonl`.
 
@@ -178,11 +178,10 @@ npm run test:coverage  # tests with a coverage report
 - **Star counts can lag.** GitHub's `updated_at` may not change when a repository is starred, so an incremental sync can miss pure star changes. Run `sync -- --full` periodically.
 - **Notion search** only returns pages shared with the integration, and its index is eventually consistent.
 - **SQLite is single-writer.** Fine here (WAL lets the MCP server read during a sync); not a multi-tenant design.
-- **Large first syncs.** A first sync of more than `SYNC_MAX_PAGES` pages is capped and never advances the watermark; raise the budget to backfill. A resumable backfill cursor is on the roadmap.
 
 ## Roadmap
 
-Resumable backfill cursor · ranked full-text and semantic search over synced items · streamable-HTTP MCP transport with authentication · OpenTelemetry traces for sync runs and agent turns · eval score history and regression tracking.
+Ranked full-text and semantic search over synced items · streamable-HTTP MCP transport with authentication · OpenTelemetry traces for sync runs and agent turns · eval score history and regression tracking.
 
 ## Contributing
 

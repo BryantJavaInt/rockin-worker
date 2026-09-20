@@ -79,7 +79,6 @@ export function createGithubAdapter(token: string, baseUrl = DEFAULT_BASE_URL): 
     },
 
     upsert: upsertRepo,
-    keyOf: (repo) => repo.id,
     prune: pruneRepos,
   };
 }

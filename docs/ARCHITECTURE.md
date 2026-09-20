@@ -52,7 +52,8 @@ Two decisions the layering encodes:
 ## Sync algorithm
 
 ```
-state = load(source)                     # watermark + lastSuccessAt
+state = load(source)                     # watermark, lastSuccessAt, unfinished pass
+resume the saved pass if it exists and has the same mode (full/incremental), else start one
 for page in pages(maxPages):
     records = adapter.fetchPage(cursor)  # newest-modified first — contract
     BEGIN
@@ -63,22 +64,23 @@ for page in pages(maxPages):
     COMMIT (or ROLLBACK the whole page)
     merge page counters into the summary   # only after COMMIT
     stop if: hit watermark | no next cursor | error
-capped = ran out of pages before either stop condition
-if full and complete (no error, not capped) and something was seen:
-    adapter.prune(seen keys)             # delete what upstream no longer has
+complete = hit the watermark or reached the end of the data
+if complete and full and the pass touched something:
+    adapter.prune(pass start time)       # delete records no run of this pass touched
 if no errors:
-    watermark = capped ? unchanged : newest modifiedAt seen
+    complete → watermark = newest modifiedAt of the WHOLE pass; clear the saved pass
+    otherwise (page budget ran out) → save {cursor, start time, newest, mode, fetched}
     lastSuccessAt = now
 append summary to sync-history.jsonl
 ```
 
 Invariants:
 
-1. **The watermark never moves past data we didn't see.** Hence "unchanged when capped" and "unchanged on error".
+1. **The watermark never moves past data we didn't see.** It changes only when a pass completes; a partial pass saves a cursor instead, and an error keeps the previous state.
 2. **`<` not `<=` at the cutoff.** Equal timestamps are re-processed. Notion rounds `last_edited_time` to the minute; `<=` would drop an edit made in the same minute as the previous sync. Idempotent upserts make the overlap free.
 3. **A summary never claims rows that were rolled back.** Page-local counters merge after COMMIT.
 4. **A logging failure never fails a sync that worked.**
-5. **Only a complete full sync may delete.** "Not seen" means "deleted upstream" only if every upstream record was seen. An incremental, capped or failed run never prunes, and an empty upstream response is refused outright.
+5. **Only a complete full pass may delete.** "Not touched since the pass began" means "deleted upstream" only if every upstream record was touched. Using the pass start time (not a set of keys) makes this work when the pass spans several runs. An incremental, unfinished or failed run never prunes, and a pass that touched nothing is refused outright.
 
 ## Data model
 
@@ -120,7 +122,7 @@ Migrations are append-only SQL in `infra/db/migrations.ts`; version `n` is store
 | Malformed record | Skipped and counted; run continues. |
 | Wrong response envelope | Run aborts with an error. |
 | Write fails mid-page | That page rolls back; earlier pages stay committed; watermark untouched. |
-| Page budget exhausted | Flagged `capped`; watermark untouched; warning logged. |
+| Page budget exhausted | Flagged `capped`; the pass is saved and the next run resumes from its cursor; watermark untouched. |
 | Model sends bad tool args | Validation error returned to the model as a tool error; loop continues. |
 | Model loops on tools | Stops at `maxTurns` (default 6); CLI exits 1. |
 | Older DB / newer DB | Migrated forward / refused. |
