@@ -29,3 +29,15 @@ export function upsertRepo(repo: Repo): UpsertOutcome {
 
   return existedBefore ? 'updated' : 'inserted';
 }
+
+/**
+ * Removes repositories that were not seen during a complete full sync. The keys travel as
+ * one JSON array (json_each) rather than N bound parameters, which would hit SQLite's
+ * variable limit on large accounts.
+ */
+export function pruneRepos(keep: ReadonlySet<string | number>): number {
+  const { changes } = getDb()
+    .prepare('DELETE FROM repos WHERE id NOT IN (SELECT value FROM json_each(?))')
+    .run(JSON.stringify([...keep]));
+  return Number(changes);
+}

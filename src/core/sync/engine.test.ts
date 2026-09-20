@@ -38,6 +38,17 @@ function makeAdapter(pages: unknown[][], overrides: Partial<SyncAdapter<Rec>> = 
       store.set(value.id, value);
       return existed ? 'updated' : 'inserted';
     },
+    keyOf: (value) => value.id,
+    prune(keep) {
+      let removed = 0;
+      for (const id of [...store.keys()]) {
+        if (!keep.has(id)) {
+          store.delete(id);
+          removed++;
+        }
+      }
+      return removed;
+    },
     ...overrides,
   };
 
@@ -45,6 +56,101 @@ function makeAdapter(pages: unknown[][], overrides: Partial<SyncAdapter<Rec>> = 
 }
 
 const noLog = () => {};
+
+describe('runSync: deletions', () => {
+  beforeEach(resetDb);
+
+  const stale = (store: Map<number, Rec>) => store.set(99, rec(99, '2020-01-01T00:00:00Z'));
+
+  it('prunes records that no longer exist upstream, on a complete full sync', async () => {
+    const { adapter, store } = makeAdapter([[rec(1, '2026-03-03T00:00:00Z')]]);
+    stale(store);
+
+    const summary = await runSync(adapter, { full: true, logRun: noLog });
+
+    expect(summary.deleted).toBe(1);
+    expect([...store.keys()]).toEqual([1]);
+  });
+
+  it('never prunes on an incremental sync (it has not seen the whole upstream)', async () => {
+    const { adapter, store } = makeAdapter([[rec(1, '2026-03-03T00:00:00Z')]]);
+    stale(store);
+
+    const summary = await runSync(adapter, { logRun: noLog });
+
+    expect(summary.deleted).toBe(0);
+    expect(store.has(99)).toBe(true);
+  });
+
+  it('never prunes when the page budget ran out (unseen records are not deleted records)', async () => {
+    const { adapter, store } = makeAdapter([
+      [rec(1, '2026-03-03T00:00:00Z')],
+      [rec(2, '2026-03-02T00:00:00Z')],
+    ]);
+    stale(store);
+
+    const summary = await runSync(adapter, { full: true, maxPages: 1, logRun: noLog });
+
+    expect(summary.capped).toBe(true);
+    expect(store.has(99)).toBe(true);
+  });
+
+  it('never prunes after an error', async () => {
+    const { adapter, store } = makeAdapter([], {
+      async fetchPage() {
+        throw new Error('boom');
+      },
+    });
+    stale(store);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await runSync(adapter, { full: true, logRun: noLog });
+
+    expect(store.has(99)).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('refuses to wipe the store when upstream returns nothing', async () => {
+    const { adapter, store } = makeAdapter([[]]);
+    stale(store);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const summary = await runSync(adapter, { full: true, logRun: noLog });
+
+    expect(summary.deleted).toBe(0);
+    expect(store.has(99)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refusing to prune'));
+    warn.mockRestore();
+  });
+
+  it('reports a failing prune as an error and rolls it back', async () => {
+    const { adapter } = makeAdapter([[rec(1, '2026-03-03T00:00:00Z')]], {
+      prune() {
+        throw new Error('locked');
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const summary = await runSync(adapter, { full: true, logRun: noLog });
+
+    expect(summary.errors).toBe(1);
+    expect(summary.lastError).toBe('locked');
+    expect(getSyncState('fake').lastSuccessAt).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('leaves deletions alone for adapters that do not opt in', async () => {
+    const { adapter, store } = makeAdapter([[rec(1, '2026-03-03T00:00:00Z')]], {
+      keyOf: undefined,
+      prune: undefined,
+    });
+    stale(store);
+
+    await runSync(adapter, { full: true, logRun: noLog });
+
+    expect(store.has(99)).toBe(true);
+  });
+});
 
 describe('runSync', () => {
   beforeEach(resetDb);

@@ -4,7 +4,7 @@
 import { z } from 'zod';
 import type { SyncAdapter } from '../../core/sync/adapter.js';
 import { ensureOk, fetchWithRetries } from '../../infra/http/client.js';
-import { type NotionPage, upsertPage } from './store.js';
+import { type NotionPage, prunePages, upsertPage } from './store.js';
 
 const DEFAULT_BASE_URL = 'https://api.notion.com';
 const NOTION_VERSION = '2022-06-28';
@@ -101,5 +101,7 @@ export function createNotionAdapter(
     },
 
     upsert: upsertPage,
+    keyOf: (page) => page.id,
+    prune: prunePages,
   };
 }

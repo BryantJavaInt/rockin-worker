@@ -14,7 +14,7 @@ import { findTool, TOOLS } from '../tools/registry.js';
 const USAGE = `rockin-worker — sync data sources into SQLite and serve them to LLM agents
 
 Usage:
-  rockin-worker sync [github|notion|all] [--full]   Sync sources (default: all configured)
+  rockin-worker sync [github|notion|all] [--full]   Sync sources (default: all configured; --full also prunes deletions)
   rockin-worker ask "<question>" [--model <id>]     Ask the Claude agent, backed by the tools
   rockin-worker tool <name> [--flag value | json]   Run one tool locally and print its JSON
   rockin-worker serve                               Start the MCP server on stdio

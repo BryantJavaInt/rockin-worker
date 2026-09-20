@@ -89,6 +89,19 @@ describe('github adapter', () => {
     warn.mockRestore();
   });
 
+  it('a full sync deletes repositories that no longer exist on GitHub', async () => {
+    getDb().exec("INSERT INTO repos VALUES (999, 'deleted-upstream', 1, 'x')");
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse([repo(1, '2026-03-02T00:00:00Z')])),
+    );
+
+    const summary = await runSync(createGithubAdapter('t'), { full: true, logRun: noLog });
+
+    expect(summary.deleted).toBe(1);
+    expect(getDb().prepare('SELECT id FROM repos').all()).toEqual([{ id: 1 }]);
+  });
+
   it('rejects a non-array payload', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ message: 'oops' })));
 

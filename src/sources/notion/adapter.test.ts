@@ -99,6 +99,21 @@ describe('notion adapter', () => {
     warn.mockRestore();
   });
 
+  it('a full sync deletes pages that no longer exist in Notion', async () => {
+    getDb().exec(
+      "INSERT INTO notion_pages VALUES ('gone', 'Old', 'u', '2020-01-01T00:00:00.000Z', 'x')",
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(envelope([page('a', '2026-03-02T10:00:00.000Z')])),
+    );
+
+    const summary = await runSync(createNotionAdapter('t'), { full: true, logRun: noLog });
+
+    expect(summary.deleted).toBe(1);
+    expect(getDb().prepare('SELECT id FROM notion_pages').all()).toEqual([{ id: 'a' }]);
+  });
+
   it('treats has_more=false as the end even if a cursor is present', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({

@@ -4,7 +4,7 @@
 import { z } from 'zod';
 import type { SyncAdapter } from '../../core/sync/adapter.js';
 import { ensureOk, fetchWithRetries } from '../../infra/http/client.js';
-import { type Repo, upsertRepo } from './store.js';
+import { pruneRepos, type Repo, upsertRepo } from './store.js';
 
 const DEFAULT_BASE_URL = 'https://api.github.com';
 
@@ -79,5 +79,7 @@ export function createGithubAdapter(token: string, baseUrl = DEFAULT_BASE_URL): 
     },
 
     upsert: upsertRepo,
+    keyOf: (repo) => repo.id,
+    prune: pruneRepos,
   };
 }

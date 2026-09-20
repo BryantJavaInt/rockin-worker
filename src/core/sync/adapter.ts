@@ -31,4 +31,13 @@ export interface SyncAdapter<T> {
   parse(raw: unknown): { modifiedAt: string; value: T } | null;
 
   upsert(value: T): UpsertOutcome;
+
+  /**
+   * Stable identity of a parsed record. Together with `prune`, this lets a full
+   * sync notice records that were deleted upstream. Omit both to keep deletions local.
+   */
+  keyOf?(value: T): string | number;
+
+  /** Deletes every local record whose key is not in `keep`; returns how many were removed. */
+  prune?(keep: ReadonlySet<string | number>): number;
 }

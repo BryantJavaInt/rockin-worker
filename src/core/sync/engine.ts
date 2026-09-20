@@ -13,6 +13,8 @@ export type SyncSummary = {
   fetched: number;
   inserted: number;
   updated: number;
+  /** Local records removed because they no longer exist upstream (full syncs only). */
+  deleted: number;
   /** Malformed upstream records that failed validation. */
   skipped: number;
   errors: number;
@@ -33,6 +35,7 @@ type PageStats = {
   updated: number;
   skipped: number;
   newest: Newest | null;
+  keys: Array<string | number>;
 };
 
 export type SyncOptions = {
@@ -57,6 +60,7 @@ export async function runSync<T>(
     fetched: 0,
     inserted: 0,
     updated: 0,
+    deleted: 0,
     skipped: 0,
     errors: 0,
     lastError: null,
@@ -73,6 +77,7 @@ export async function runSync<T>(
   let reachedWatermark = false;
   let exhausted = false;
   let newest: Newest | null = null;
+  const seen = new Set<string | number>();
 
   while (pagesFetched < maxPages) {
     let page: Page;
@@ -89,7 +94,7 @@ export async function runSync<T>(
 
     // Page-local counters are merged only after COMMIT, so a rolled-back page
     // can never leave the summary claiming rows that were not written.
-    const local: PageStats = { fetched: 0, inserted: 0, updated: 0, skipped: 0, newest };
+    const local: PageStats = { fetched: 0, inserted: 0, updated: 0, skipped: 0, newest, keys: [] };
     let hitWatermark = false;
 
     try {
@@ -118,6 +123,7 @@ export async function runSync<T>(
             local.newest = { ms: modifiedMs, iso: parsed.modifiedAt };
           }
           local[adapter.upsert(parsed.value)]++;
+          if (adapter.keyOf) local.keys.push(adapter.keyOf(parsed.value));
         }
       });
     } catch (err) {
@@ -132,6 +138,7 @@ export async function runSync<T>(
     summary.updated += local.updated;
     summary.skipped += local.skipped;
     newest = local.newest;
+    for (const key of local.keys) seen.add(key);
 
     if (hitWatermark) {
       reachedWatermark = true;
@@ -145,6 +152,26 @@ export async function runSync<T>(
   }
 
   summary.capped = summary.errors === 0 && !reachedWatermark && !exhausted;
+
+  // Deletions: only a *complete* full sync has seen every upstream record, so only then
+  // is "not seen" equivalent to "deleted upstream". An empty result is refused outright —
+  // it is far more likely to be a scope or outage problem than an account with nothing in it.
+  const prune = adapter.prune?.bind(adapter);
+  if (options.full && prune && summary.errors === 0 && !summary.capped) {
+    if (seen.size === 0) {
+      console.warn(
+        `[${adapter.source}] full sync saw no records; refusing to prune the local store.`,
+      );
+    } else {
+      try {
+        summary.deleted = withTransaction(() => prune(seen));
+      } catch (err) {
+        summary.errors++;
+        summary.lastError = describeError(err);
+        console.warn(`[${adapter.source}] prune rolled back: ${summary.lastError}`);
+      }
+    }
+  }
 
   // Advance the watermark only on a complete, error-free run. If the page budget
   // ran out (capped), the records we did not reach are OLDER than the newest one
