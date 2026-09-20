@@ -33,16 +33,22 @@ export function buildResult<T>(
   source: string,
   items: T[],
   ranking?: QueryResult<T>['ranking'],
+  warning?: string,
 ): QueryResult<T> {
   const { lastSuccessAt } = getSyncState(source);
   const result: QueryResult<T> = { source, lastSyncAt: lastSuccessAt, count: items.length, items };
   if (ranking) result.ranking = ranking;
 
+  const notes: string[] = [];
   if (items.length === 0) {
-    result.note = lastSuccessAt
-      ? 'No matching items in the local store.'
-      : `The ${source} source has never been synced, so the local store is empty. Run a sync first.`;
+    notes.push(
+      lastSuccessAt
+        ? 'No matching items in the local store.'
+        : `The ${source} source has never been synced, so the local store is empty. Run a sync first.`,
+    );
   }
+  if (warning) notes.push(warning);
+  if (notes.length > 0) result.note = notes.join(' ');
   return result;
 }
 

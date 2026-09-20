@@ -11,10 +11,15 @@ const EnvSchema = z.object({
   GITHUB_TOKEN: z.string().optional(),
   NOTION_TOKEN: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  // Semantic search. Anthropic offers no embeddings API, so vectors come from Voyage AI.
+  VOYAGE_API_KEY: z.string().optional(),
+  EMBEDDING_MODEL: z.string().default('voyage-3.5-lite'),
+  // Cosine-similarity floor for semantic matches. Scales differ per model: calibrate it.
+  SEMANTIC_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.25),
 });
 
 export type Config = z.infer<typeof EnvSchema>;
-export type SecretName = 'GITHUB_TOKEN' | 'NOTION_TOKEN' | 'ANTHROPIC_API_KEY';
+export type SecretName = 'GITHUB_TOKEN' | 'NOTION_TOKEN' | 'ANTHROPIC_API_KEY' | 'VOYAGE_API_KEY';
 
 export class ConfigError extends Error {
   override name = 'ConfigError';

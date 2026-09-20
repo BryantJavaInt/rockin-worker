@@ -110,6 +110,19 @@ export const MIGRATIONS: readonly string[] = [
   INSERT INTO repos_fts(repos_fts) VALUES ('rebuild');
   INSERT INTO notion_fts(notion_fts) VALUES ('rebuild');
   `,
+  // v5: semantic search vectors. One row per indexed document; textHash lets the indexer skip
+  // documents whose text has not changed, and model keeps vectors of different models apart.
+  `
+  CREATE TABLE embeddings (
+    source TEXT NOT NULL,
+    id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    textHash TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    PRIMARY KEY (source, id)
+  );
+  `,
 ];
 
 export function migrate(db: DatabaseSync): void {

@@ -14,11 +14,11 @@ const addRepo = (id: number, name: string, stars: number) =>
 describe('github queries', () => {
   beforeEach(resetDb);
 
-  it('returns the honest empty case for a store that was never synced', () => {
+  it('returns the honest empty case for a store that was never synced', async () => {
     expect(getTopItems({})).toMatchObject({ source: 'github', lastSyncAt: null, count: 0 });
   });
 
-  it('orders by stars (ties broken by name) and reports real freshness', () => {
+  it('orders by stars (ties broken by name) and reports real freshness', async () => {
     saveSyncState('github', { watermark: now, lastSuccessAt: '2026-03-01T12:00:00Z' });
     addRepo(1, 'b-low', 2);
     addRepo(2, 'a-tie', 50);
@@ -31,7 +31,7 @@ describe('github queries', () => {
     expect(result.note).toBeUndefined();
   });
 
-  it('clamps the limit to 20 and defaults to 10', () => {
+  it('clamps the limit to 20 and defaults to 10', async () => {
     for (let i = 1; i <= 25; i++) addRepo(i, `repo-${i}`, i);
 
     expect(getTopItems({ limit: 100 }).items).toHaveLength(20);
@@ -39,19 +39,19 @@ describe('github queries', () => {
     expect(getTopItems({ limit: 3 }).items).toHaveLength(3);
   });
 
-  it('matches substrings case-insensitively', () => {
+  it('matches substrings case-insensitively', async () => {
     addRepo(1, 'FinTrack', 5);
     addRepo(2, 'other', 9);
 
-    expect(search({ query: 'fin' }).items.map((i) => i.name)).toEqual(['FinTrack']);
+    expect((await search({ query: 'fin' })).items.map((i) => i.name)).toEqual(['FinTrack']);
   });
 
-  it('treats LIKE wildcards in the query literally (a model-supplied "%" must not match everything)', () => {
+  it('treats LIKE wildcards in the query literally (a model-supplied "%" must not match everything)', async () => {
     addRepo(1, 'plain', 1);
     addRepo(2, '100%_done', 1);
 
-    expect(search({ query: '%' }).items.map((i) => i.name)).toEqual(['100%_done']);
-    expect(search({ query: '_' }).items.map((i) => i.name)).toEqual(['100%_done']);
-    expect(search({ query: 'p_ain' }).items).toHaveLength(0);
+    expect((await search({ query: '%' })).items.map((i) => i.name)).toEqual(['100%_done']);
+    expect((await search({ query: '_' })).items.map((i) => i.name)).toEqual(['100%_done']);
+    expect((await search({ query: 'p_ain' })).items).toHaveLength(0);
   });
 });

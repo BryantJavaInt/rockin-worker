@@ -83,10 +83,10 @@ type ToolResultBlock = {
   is_error?: true;
 };
 
-function executeToolUse(
+async function executeToolUse(
   use: z.infer<typeof ToolUseBlock>,
   tools: readonly Tool[],
-): { block: ToolResultBlock; call: ToolCall } {
+): Promise<{ block: ToolResultBlock; call: ToolCall }> {
   const tool = tools.find((candidate) => candidate.name === use.name);
   const fail = (message: string) => ({
     block: {
@@ -102,7 +102,7 @@ function executeToolUse(
 
   try {
     // execute() validates the model's arguments — LLM output is untrusted input.
-    let content = JSON.stringify(tool.execute(use.input));
+    let content = JSON.stringify(await tool.execute(use.input));
     if (content.length > MAX_TOOL_OUTPUT_CHARS) {
       content = `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}…[truncated]`;
     }
@@ -210,7 +210,7 @@ export async function runAgent(question: string, options: AgentOptions): Promise
       return finish(answer, turn, parsed.stop_reason ?? 'unknown');
     }
 
-    const results = toolUses.map((use) => executeToolUse(use, tools));
+    const results = await Promise.all(toolUses.map((use) => executeToolUse(use, tools)));
     toolCalls.push(...results.map((r) => r.call));
     messages.push({ role: 'user', content: results.map((r) => r.block) });
   }

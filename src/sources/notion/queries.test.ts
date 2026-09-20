@@ -14,7 +14,7 @@ const addPage = (id: string, title: string, lastEditedTime: string) =>
 describe('notion queries', () => {
   beforeEach(resetDb);
 
-  it('orders by last edit, most recent first', () => {
+  it('orders by last edit, most recent first', async () => {
     saveSyncState('notion', { watermark: now, lastSuccessAt: '2026-03-01T12:00:00Z' });
     addPage('a', 'Old', '2026-01-01T00:00:00.000Z');
     addPage('b', 'New', '2026-06-01T00:00:00.000Z');
@@ -22,22 +22,22 @@ describe('notion queries', () => {
     expect(getRecentItems({}).items.map((i) => i.title)).toEqual(['New', 'Old']);
   });
 
-  it('returns the honest empty case', () => {
+  it('returns the honest empty case', async () => {
     expect(getRecentItems({})).toMatchObject({ source: 'notion', count: 0, lastSyncAt: null });
   });
 
-  it('clamps the limit like every other query', () => {
+  it('clamps the limit like every other query', async () => {
     for (let i = 1; i <= 25; i++)
       addPage(`p${i}`, `Page ${i}`, `2026-01-${String(i).padStart(2, '0')}T00:00:00.000Z`);
 
     expect(getRecentItems({ limit: 100 }).items).toHaveLength(20);
   });
 
-  it('searches titles literally and case-insensitively', () => {
+  it('searches titles literally and case-insensitively', async () => {
     addPage('a', 'Q3 Roadmap', '2026-01-01T00:00:00.000Z');
     addPage('b', 'Notes', '2026-01-01T00:00:00.000Z');
 
-    expect(search({ query: 'roadmap' }).items.map((i) => i.id)).toEqual(['a']);
-    expect(search({ query: '%' }).items).toHaveLength(0);
+    expect((await search({ query: 'roadmap' })).items.map((i) => i.id)).toEqual(['a']);
+    expect((await search({ query: '%' })).items).toHaveLength(0);
   });
 });

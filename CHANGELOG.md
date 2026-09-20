@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Format based on [Keep a
 ## [Unreleased]
 
 ### Added
+- Semantic search: an `EmbeddingProvider` port with a Voyage AI implementation, float32 vectors stored in SQLite, an incremental indexer (`embed`, `sync --embed`, automatic in worker mode) and hybrid ranking that fuses lexical and semantic results with Reciprocal Rank Fusion. Optional: without a key, index or provider it degrades to lexical ranking with an explanatory note. Tools may now be asynchronous.
 - Ranked full-text search (FTS5, Porter stemming, BM25) over repository name/description/topics and Notion titles, replacing substring matching, with a substring fallback. GitHub sync now also stores description, language, topics and URL.
 - Resumable backfill: a sync pass that exceeds the page budget saves its cursor and resumes on the next run, so large accounts finish in several runs instead of never advancing. Deletions are now detected with the pass start time instead of a set of seen keys, which also works across runs (`SyncAdapter.keyOf` is removed; `prune` takes the pass start time).
 - `sync --full` prunes records deleted upstream (optional `keyOf`/`prune` on `SyncAdapter`), only after a complete, error-free, uncapped run and never on an empty upstream response.

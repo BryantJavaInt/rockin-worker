@@ -44,7 +44,7 @@ export function createMcpServer(tools: readonly Tool[] = TOOLS): McpServer {
       },
       async (args) => {
         try {
-          return textResult(tool.execute(args), { structured: tool.output !== undefined });
+          return textResult(await tool.execute(args), { structured: tool.output !== undefined });
         } catch (err) {
           return textResult({ error: describeError(err) }, { isError: true });
         }

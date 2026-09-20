@@ -62,6 +62,9 @@ All configuration is environment variables, read from the process environment fi
 | `GITHUB_TOKEN` | — | Enables the GitHub source. |
 | `NOTION_TOKEN` | — | Enables the Notion source. |
 | `ANTHROPIC_API_KEY` | — | Required for `ask` and `eval`. |
+| `VOYAGE_API_KEY` | — | Enables semantic search (embeddings come from Voyage AI; Anthropic has no embeddings API). |
+| `EMBEDDING_MODEL` | `voyage-3.5-lite` | Embedding model. Changing it re-embeds everything on the next `embed`. |
+| `SEMANTIC_MIN_SCORE` | `0.25` | Cosine-similarity floor for semantic matches. Scales differ per model — calibrate it. |
 | `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Model used by `ask` and `eval` (`--model` overrides it per call). |
 | `DB_PATH` | `./data.db` | SQLite file. Use `:memory:` for a throwaway database. |
 | `LOG_DIR` | `./logs` | Where `sync-history.jsonl` (one JSON line per sync run) is written. |
@@ -72,6 +75,7 @@ All configuration is environment variables, read from the process environment fi
 | Command | What it does |
 | --- | --- |
 | `npm run sync` · `sync:github` · `sync:notion` | Sync all configured sources, or one. Append `-- --full` to ignore the watermark, re-sync everything and prune records deleted upstream, or `-- --every 15m` to keep running as a worker (stops gracefully on Ctrl+C / SIGTERM). Exits 1 if any source errored. |
+| `npm run embed [-- github|notion]` | Build or refresh the semantic-search index (needs `VOYAGE_API_KEY`). Incremental: only new or edited items are embedded. `sync --embed` does it right after a sync, and a worker does it every cycle once a key is set. |
 | `npm run tool -- <name> [--flag value]` | Run one tool locally and print its JSON. Without a name it lists the available tools. |
 | `npm run ask -- "<question>"` | Ask the Claude agent (tools run in-process). Tools used, tokens and latency go to stderr. |
 | `npm run serve` | MCP server over stdio. |
@@ -128,6 +132,8 @@ The image runs as a non-root user and keeps its database and logs in the `/data`
 - **Observable.** Every run appends one structured line to `logs/sync-history.jsonl`.
 
 **Search** is ranked, not substring matching: SQLite FTS5 with stemming ("habits" finds "habit tracker") and BM25 weighting (a name match outranks a description match) over each repository's name, description and topics and each page's title, with a substring fallback for text inside a word. Queries are turned into quoted prefix terms, so model-supplied text can never inject FTS syntax.
+
+**Semantic search** is optional and additive. With `VOYAGE_API_KEY` set and `embed` run, each search also ranks the local vectors by cosine similarity and fuses both rankings with Reciprocal Rank Fusion (which needs no score calibration between BM25 and cosine), so "routine" finds a repository described as "track daily habits" although they share no word. It is never a dependency: with no key, no index, or a provider outage, search silently degrades to the lexical ranking and says so in the result's `note`. Only the query text leaves your machine (to the embeddings provider); the synced data is embedded by `embed`, never by a tool call.
 
 **Tools** are defined once ([`src/tools/define.ts`](src/tools/define.ts), one file per source in [`src/tools/`](src/tools)) and consumed by the MCP server, the agent and the evals, so the name, description and schema the model sees cannot drift between them. Model-produced arguments are validated before execution, and MCP tools are annotated `readOnlyHint` so hosts can safely auto-approve them. Each tool also declares an output schema derived from the same Zod types as its query, and the MCP server returns typed `structuredContent` (plus the text fallback); a contract test parses every tool's real output against its schema.
 

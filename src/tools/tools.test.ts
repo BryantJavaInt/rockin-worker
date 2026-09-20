@@ -83,17 +83,17 @@ describe('tool output contracts', () => {
     }
   });
 
-  it('real results conform to the declared schema — with data, and when empty', () => {
+  it('real results conform to the declared schema — with data, and when empty', async () => {
     for (const tool of TOOLS) {
-      expect(
-        () => tool.output?.parse(tool.execute(sampleArgs[tool.name])),
-        `${tool.name} (empty)`,
-      ).not.toThrow();
+      const result = await tool.execute(sampleArgs[tool.name]);
+      expect(() => tool.output?.parse(result), `${tool.name} (empty)`).not.toThrow();
     }
 
     seedFixtures();
     for (const tool of TOOLS) {
-      const result = tool.output?.parse(tool.execute(sampleArgs[tool.name])) as { count: number };
+      const result = tool.output?.parse(await tool.execute(sampleArgs[tool.name])) as {
+        count: number;
+      };
       expect(result.count, `${tool.name} (seeded)`).toBeGreaterThan(0);
     }
   });

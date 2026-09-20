@@ -18,7 +18,7 @@ export interface Tool {
   /** Shape of what `execute` returns. Lets MCP clients receive typed `structuredContent`. */
   readonly output?: z.ZodObject;
   /** Validates untrusted (LLM-produced) arguments against `input`, then runs the tool. */
-  execute(args: unknown): unknown;
+  execute(args: unknown): unknown | Promise<unknown>;
 }
 
 export function defineTool<S extends z.ZodObject>(def: {
@@ -27,7 +27,7 @@ export function defineTool<S extends z.ZodObject>(def: {
   description: string;
   input: S;
   output?: z.ZodObject;
-  run: (args: z.infer<S>) => unknown;
+  run: (args: z.infer<S>) => unknown | Promise<unknown>;
 }): Tool {
   return {
     name: def.name,

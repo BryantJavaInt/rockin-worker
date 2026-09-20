@@ -10,6 +10,7 @@ import {
   MAX_RESULTS,
   type QueryResult,
 } from '../../core/query.js';
+import { hybridRank } from '../../core/search/hybrid.js';
 import { getDb } from '../../infra/db/connection.js';
 
 export const repoItemSchema = z.object({
@@ -26,6 +27,9 @@ export type RepoItem = z.infer<typeof repoItemSchema>;
 export type RepoRow = Omit<RepoItem, 'topics'> & { topics: string };
 
 const COLUMNS = 'r.id, r.name, r.stars, r.description, r.language, r.topics, r.url';
+
+// Candidates gathered per ranking before fusion; the answer is cut to MAX_RESULTS afterwards.
+const CANDIDATES = 50;
 
 export function toRepoItem(row: RepoRow): RepoItem {
   let topics: string[] = [];
@@ -79,7 +83,34 @@ export function lexicalRepoRows(query: string, limit: number): RepoRow[] {
     .all(pattern, pattern, limit) as RepoRow[];
 }
 
-export function search(args: { query: string }): QueryResult<RepoItem> {
-  const rows = lexicalRepoRows(args.query, MAX_RESULTS);
-  return buildResult('github', rows.map(toRepoItem), 'lexical');
+function repoRowsByIds(ids: string[]): RepoRow[] {
+  return getDb()
+    .prepare(
+      `SELECT ${COLUMNS} FROM repos r WHERE CAST(r.id AS TEXT) IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(ids)) as RepoRow[];
+}
+
+/**
+ * Ranked search: lexical (BM25) fused with semantic similarity when embeddings are configured
+ * and indexed, lexical only otherwise. Async because embedding the query is a network call.
+ */
+export async function search(args: { query: string }): Promise<QueryResult<RepoItem>> {
+  const lexical = lexicalRepoRows(args.query, CANDIDATES);
+  const ranked = await hybridRank({
+    source: 'github',
+    query: args.query,
+    lexicalIds: lexical.map((row) => String(row.id)),
+  });
+
+  const byId = new Map(lexical.map((row) => [String(row.id), row]));
+  const semanticOnly = ranked.ids.filter((id) => !byId.has(id));
+  for (const row of semanticOnly.length > 0 ? repoRowsByIds(semanticOnly) : []) {
+    byId.set(String(row.id), row);
+  }
+
+  const rows = ranked.ids
+    .slice(0, MAX_RESULTS)
+    .flatMap((id) => (byId.has(id) ? [byId.get(id) as RepoRow] : []));
+  return buildResult('github', rows.map(toRepoItem), ranked.ranking, ranked.warning);
 }

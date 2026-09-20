@@ -49,6 +49,7 @@
     "sync:notion": "tsx src/main.ts sync notion",
     "ask": "tsx src/main.ts ask",
     "tool": "tsx src/main.ts tool",
+    "embed": "tsx src/main.ts embed",
     "serve": "tsx src/main.ts serve",
     "eval": "tsx src/evals/run.ts"
   },

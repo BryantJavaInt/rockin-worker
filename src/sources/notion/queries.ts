@@ -10,6 +10,7 @@ import {
   MAX_RESULTS,
   type QueryResult,
 } from '../../core/query.js';
+import { hybridRank } from '../../core/search/hybrid.js';
 import { getDb } from '../../infra/db/connection.js';
 
 export const pageItemSchema = z.object({
@@ -21,6 +22,9 @@ export const pageItemSchema = z.object({
 export type PageItem = z.infer<typeof pageItemSchema>;
 
 const COLUMNS = 'n.id, n.title, n.url, n.lastEditedTime';
+
+// Candidates gathered per ranking before fusion; the answer is cut to MAX_RESULTS afterwards.
+const CANDIDATES = 50;
 
 // Same read-only contract as the GitHub queries: local store only.
 
@@ -56,6 +60,29 @@ export function lexicalPageRows(query: string, limit: number): PageItem[] {
     .all(`%${escapeLike(query)}%`, limit) as PageItem[];
 }
 
-export function search(args: { query: string }): QueryResult<PageItem> {
-  return buildResult('notion', lexicalPageRows(args.query, MAX_RESULTS), 'lexical');
+function pageRowsByIds(ids: string[]): PageItem[] {
+  return getDb()
+    .prepare(`SELECT ${COLUMNS} FROM notion_pages n WHERE n.id IN (SELECT value FROM json_each(?))`)
+    .all(JSON.stringify(ids)) as PageItem[];
+}
+
+/** Ranked search: lexical (BM25) fused with semantic similarity when embeddings are configured. */
+export async function search(args: { query: string }): Promise<QueryResult<PageItem>> {
+  const lexical = lexicalPageRows(args.query, CANDIDATES);
+  const ranked = await hybridRank({
+    source: 'notion',
+    query: args.query,
+    lexicalIds: lexical.map((row) => row.id),
+  });
+
+  const byId = new Map(lexical.map((row) => [row.id, row]));
+  const semanticOnly = ranked.ids.filter((id) => !byId.has(id));
+  for (const row of semanticOnly.length > 0 ? pageRowsByIds(semanticOnly) : []) {
+    byId.set(row.id, row);
+  }
+
+  const rows = ranked.ids
+    .slice(0, MAX_RESULTS)
+    .flatMap((id) => (byId.has(id) ? [byId.get(id) as PageItem] : []));
+  return buildResult('notion', rows, ranked.ranking, ranked.warning);
 }
