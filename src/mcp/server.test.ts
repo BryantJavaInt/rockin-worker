@@ -13,7 +13,7 @@ import { seedFixtures } from '../evals/fixtures.js';
 import { closeDb } from '../infra/db/connection.js';
 import { defineTool } from '../tools/define.js';
 import { TOOLS } from '../tools/registry.js';
-import { createMcpServer } from './server.js';
+import { createMcpServer, serveStdio } from './server.js';
 
 // A real end-to-end check: spawn the actual CLI as a child process speaking MCP over
 // stdio, seeded through a real on-disk SQLite file, and drive it with the official MCP
@@ -143,5 +143,28 @@ describe('createMcpServer (in-process)', () => {
     const client = await connect();
 
     expect((await client.listTools()).tools).toHaveLength(TOOLS.length);
+  });
+});
+
+describe('serveStdio shutdown', () => {
+  it('closes cleanly and resolves when the shutdown signal aborts', async () => {
+    const server = createMcpServer();
+    const controller = new AbortController();
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'shutdown-test', version: '0.0.0' });
+
+    const served = serveStdio(server, controller.signal, serverSide);
+    await client.connect(clientSide);
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+
+    controller.abort();
+    await expect(served).resolves.toBeUndefined();
+  });
+
+  it('returns immediately if shutdown was already requested', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(serveStdio(createMcpServer(), controller.signal)).resolves.toBeUndefined();
   });
 });

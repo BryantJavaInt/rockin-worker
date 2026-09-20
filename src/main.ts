@@ -11,5 +11,12 @@ import { closeDb } from './infra/db/connection.js';
 dotenv.config({ quiet: true });
 
 // exitCode (not process.exit) lets pending stdout/stderr writes flush first.
-process.exitCode = await run(process.argv.slice(2));
+// SIGINT (Ctrl+C) and SIGTERM (docker stop) request a graceful shutdown: a running sync
+// cycle finishes and the MCP server closes its transport, then the DB is closed below.
+const shutdown = new AbortController();
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => shutdown.abort());
+}
+
+process.exitCode = await run(process.argv.slice(2), { signal: shutdown.signal });
 closeDb();

@@ -5,7 +5,9 @@ import { parseArgs } from 'node:util';
 import { runAgent } from '../agent/agent.js';
 import { ConfigError, loadConfig, requireSecret } from '../config/index.js';
 import { APP, describeApp } from '../config/meta.js';
+import { parseDuration } from '../core/duration.js';
 import { describeError } from '../core/errors.js';
+import { runEvery } from '../core/sync/watch.js';
 import { serveStdio } from '../mcp/server.js';
 import { SOURCE_NAMES, SOURCES, type SourceName } from '../sources/index.js';
 import { type Tool, toInputJsonSchema } from '../tools/define.js';
@@ -14,7 +16,10 @@ import { findTool, TOOLS } from '../tools/registry.js';
 const USAGE = `rockin-worker — sync data sources into SQLite and serve them to LLM agents
 
 Usage:
-  rockin-worker sync [github|notion|all] [--full]   Sync sources (default: all configured; --full also prunes deletions)
+  rockin-worker sync [github|notion|all] [--full] [--every 15m]
+                                                    Sync sources (default: all configured).
+                                                    --full re-syncs everything and prunes deletions;
+                                                    --every keeps running as a worker until Ctrl+C
   rockin-worker ask "<question>" [--model <id>]     Ask the Claude agent, backed by the tools
   rockin-worker tool <name> [--flag value | json]   Run one tool locally and print its JSON
   rockin-worker serve                               Start the MCP server on stdio
@@ -33,20 +38,10 @@ class UsageError extends Error {
 const isSourceName = (value: string): value is SourceName =>
   (SOURCE_NAMES as string[]).includes(value);
 
-async function syncCommand(args: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args,
-    options: { full: { type: 'boolean', default: false } },
-    allowPositionals: true,
-  });
+const MIN_WATCH_INTERVAL_MS = 1000;
 
-  const target = positionals[0] ?? 'all';
-  if (target !== 'all' && !isSourceName(target)) {
-    throw new UsageError(
-      `Unknown source "${target}". Expected one of: ${SOURCE_NAMES.join(', ')}, all`,
-    );
-  }
-
+/** One pass over the selected sources. Returns the exit code for that pass. */
+async function syncOnce(target: string, full: boolean): Promise<number> {
   const config = loadConfig();
   const names = target === 'all' ? SOURCE_NAMES : [target as SourceName];
   let exitCode = 0;
@@ -60,9 +55,7 @@ async function syncCommand(args: string[]): Promise<number> {
       continue;
     }
 
-    const summary = await source.sync(requireSecret(config, source.tokenEnv), {
-      full: values.full,
-    });
+    const summary = await source.sync(requireSecret(config, source.tokenEnv), { full });
     ran++;
     console.log(JSON.stringify(summary, null, 2));
     if (summary.errors > 0) exitCode = 1;
@@ -73,6 +66,58 @@ async function syncCommand(args: string[]): Promise<number> {
     return 1;
   }
   return exitCode;
+}
+
+async function syncCommand(args: string[], signal?: AbortSignal): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      full: { type: 'boolean', default: false },
+      every: { type: 'string' },
+    },
+    allowPositionals: true,
+  });
+
+  const target = positionals[0] ?? 'all';
+  if (target !== 'all' && !isSourceName(target)) {
+    throw new UsageError(
+      `Unknown source "${target}". Expected one of: ${SOURCE_NAMES.join(', ')}, all`,
+    );
+  }
+
+  if (values.every === undefined) return syncOnce(target, values.full);
+
+  // Worker mode: sync on an interval until told to stop. A failing cycle is logged and the
+  // worker keeps going — it should not die because GitHub had a bad minute.
+  let intervalMs: number;
+  try {
+    intervalMs = parseDuration(values.every);
+  } catch (err) {
+    throw new UsageError(describeError(err));
+  }
+  if (intervalMs < MIN_WATCH_INTERVAL_MS) {
+    throw new UsageError('--every must be at least 1s, to avoid hammering the upstream APIs.');
+  }
+
+  const controller = new AbortController();
+  signal?.addEventListener('abort', () => controller.abort(), { once: true });
+  if (signal?.aborted) controller.abort();
+
+  console.error(
+    `Worker started: syncing ${target} every ${values.every}. Ctrl+C stops after the current cycle.`,
+  );
+  await runEvery(
+    async () => {
+      const code = await syncOnce(target, values.full);
+      if (code !== 0)
+        console.error(`Cycle finished with errors (exit ${code}); will retry next interval.`);
+    },
+    intervalMs,
+    controller.signal,
+    { onError: (err) => console.error(`Cycle failed: ${describeError(err)}`) },
+  );
+  console.error('Worker stopped.');
+  return 0;
 }
 
 async function askCommand(args: string[]): Promise<number> {
@@ -175,19 +220,19 @@ function toolCommand(args: string[]): number {
 }
 
 /** Runs the CLI and returns the process exit code. Pure of `process.exit`, so it is testable. */
-export async function run(argv: string[]): Promise<number> {
+export async function run(argv: string[], deps: { signal?: AbortSignal } = {}): Promise<number> {
   const [command, ...rest] = argv;
 
   try {
     switch (command) {
       case 'sync':
-        return await syncCommand(rest);
+        return await syncCommand(rest, deps.signal);
       case 'ask':
         return await askCommand(rest);
       case 'tool':
         return toolCommand(rest);
       case 'serve':
-        await serveStdio();
+        await serveStdio(undefined, deps.signal);
         return 0;
       case 'version':
       case '--version':

@@ -3,6 +3,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { APP } from '../config/meta.js';
 import { describeError } from '../core/errors.js';
 import type { Tool } from '../tools/define.js';
@@ -51,11 +52,23 @@ export function createMcpServer(tools: readonly Tool[] = TOOLS): McpServer {
   return server;
 }
 
-/** Serves over stdio (stdout is the protocol channel — never write to it). Resolves when the client disconnects. */
-export async function serveStdio(server: McpServer = createMcpServer()): Promise<void> {
+/**
+ * Serves over stdio (stdout is the protocol channel — never write to it). Resolves when the
+ * client disconnects or `signal` aborts (SIGINT/SIGTERM), closing the transport cleanly first.
+ * `transport` is injectable so the shutdown path can be tested without a real stdin.
+ */
+export async function serveStdio(
+  server: McpServer = createMcpServer(),
+  signal?: AbortSignal,
+  transport: Transport = new StdioServerTransport(),
+): Promise<void> {
+  if (signal?.aborted) return;
+
   const closed = new Promise<void>((resolve) => {
     server.server.onclose = () => resolve();
   });
-  await server.connect(new StdioServerTransport());
+  signal?.addEventListener('abort', () => void server.close(), { once: true });
+
+  await server.connect(transport);
   await closed;
 }

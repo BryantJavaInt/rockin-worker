@@ -189,3 +189,46 @@ describe('cli: ask', () => {
     expect(stderr()).toMatch(/tokens: 4 in \/ 2 out/);
   });
 });
+
+describe('cli: sync --every (worker mode)', () => {
+  it('rejects an invalid or dangerously short interval', async () => {
+    expect(await run(['sync', 'github', '--every', 'soon'])).toBe(2);
+    expect(stderr()).toMatch(/Invalid duration/);
+    expect(await run(['sync', 'github', '--every', '500ms'])).toBe(2);
+    expect(stderr()).toMatch(/at least 1s/);
+  });
+
+  it('syncs, keeps running, and stops gracefully on the shutdown signal', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'ghp_test');
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async () =>
+        jsonResponse([
+          { id: 1, name: 'r', stargazers_count: 3, updated_at: '2026-03-01T00:00:00Z' },
+        ]),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const shutdown = new AbortController();
+
+    const exit = run(['sync', 'github', '--every', '1h'], { signal: shutdown.signal });
+    await vi.waitFor(() => expect(stdout()).toContain('"source": "github"'));
+    shutdown.abort();
+
+    expect(await exit).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(stderr()).toMatch(/Worker started/);
+    expect(stderr()).toMatch(/Worker stopped/);
+  });
+
+  it('a failing cycle does not stop the worker', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'ghp_test');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 401 })));
+    const shutdown = new AbortController();
+
+    const exit = run(['sync', 'github', '--every', '1h'], { signal: shutdown.signal });
+    await vi.waitFor(() => expect(stderr()).toMatch(/Cycle finished with errors/));
+    shutdown.abort();
+
+    expect(await exit).toBe(0);
+  });
+});
