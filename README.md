@@ -1,58 +1,192 @@
-# Rockin Worker — GitHub Sync
+# Rockin Worker
 
-Mini-worker que sincroniza repositorios de GitHub, los persiste de forma idempotente en SQLite, y expone una Tool para consultarlos (vía CLI y vía servidor MCP).
+[![CI](https://github.com/BryantJavaInt/rockin-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/BryantJavaInt/rockin-worker/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%E2%89%A524-339933)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)
 
-## Setup
+Created and maintained by [Bryant Giorgini](https://github.com/BryantJavaInt).
 
-1. Clona el repositorio
-2. Instala las dependencias:
+**Give an LLM agent a trustworthy, always-available view of your data — without letting it near your APIs.**
 
+Rockin Worker syncs data from third-party APIs (GitHub, Notion) into a local SQLite store, then exposes that store to Claude two ways: as a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for Claude Desktop and any MCP host, and through a built-in tool-use agent (`ask`). A small eval harness measures whether the agent picks the right tool, answers from real data, and resists prompt injection.
+
+```mermaid
+flowchart LR
+  subgraph Upstream
+    GH[GitHub API]
+    NO[Notion API]
+  end
+  subgraph Worker
+    direction TB
+    E[Sync engine<br/>pagination · watermark · transactions]
+    DB[(SQLite<br/>WAL · versioned migrations)]
+    R[Tool registry<br/>single source of truth]
+  end
+  GH & NO -->|adapters: fetch + validate| E --> DB
+  DB --> R
+  R --> M[MCP server<br/>stdio]
+  R --> A[Agent loop<br/>Anthropic Messages API]
+  R --> EV[Evals]
+  M --> CD[Claude Desktop / MCP hosts]
+```
+
+**Why this shape.** Tools only ever *read a local snapshot*. The agent stays fast, keeps working when an upstream API is down or rate-limited, cannot be talked into calling an API it shouldn't, and every answer carries an honest `lastSyncAt` freshness stamp.
+
+## Quickstart
+
+**Prerequisites:** Node.js ≥ 24 (`.nvmrc` provided; uses the built-in `node:sqlite`, so there are no native modules to compile) and at least one data-source credential:
+
+- **GitHub** — a [personal access token](https://github.com/settings/tokens) with read access to your repositories.
+- **Notion** — an [internal integration](https://www.notion.so/my-integrations) token; share the pages you want synced with that integration.
+- **Anthropic** (only for `ask` / `eval`) — an API key from the [Console](https://console.anthropic.com/).
+
+```bash
 npm install
+cp .env.example .env                        # then fill in your credentials
 
-3. Copia `.env.example` a `.env` y añade tu token de GitHub:
+npm run sync                                # sync every configured source (incremental after the first run)
+npm run tool -- github_getTopItems --limit 5   # call a tool locally — no LLM involved
+npm run ask -- "Which of my repos has the most stars, and which Notion page did I edit last?"
+npm run serve                               # MCP server on stdio
+```
 
-GITHUB_TOKEN=
+Tool arguments are passed as flags (`--limit 5`, `--query roadmap`) so they work the same in bash, PowerShell and cmd. A JSON object is also accepted where your shell allows it: `npm run tool -- github_getTopItems '{"limit":5}'`.
 
-El token necesita el scope `public_repo` (solo lectura de repos públicos).
+## Configuration
 
-## Cómo ejecutar
+All configuration is environment variables, read from the process environment first and from `.env` second. Blank values count as unset.
 
-### Sync (trae y guarda los repos)
-npx tsx src/sync.ts
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | — | Enables the GitHub source. |
+| `NOTION_TOKEN` | — | Enables the Notion source. |
+| `ANTHROPIC_API_KEY` | — | Required for `ask` and `eval`. |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Model used by `ask` and `eval` (`--model` overrides it per call). |
+| `DB_PATH` | `./data.db` | SQLite file. Use `:memory:` for a throwaway database. |
+| `LOG_DIR` | `./logs` | Where `sync-history.jsonl` (one JSON line per sync run) is written. |
+| `SYNC_MAX_PAGES` | `5` | Page budget per source per run. If it runs out before the data does, the run is flagged `capped` and the watermark is not advanced. |
 
-### Tool - top items por estrellas (vía CLI)
-npx tsx src/tool.ts getTopItems --limit 5
+## Commands
 
-### Tool - búsqueda por nombre (vía CLI)
-npx tsx src/tool.ts searchByName --query Fin
+| Command | What it does |
+| --- | --- |
+| `npm run sync` · `sync:github` · `sync:notion` | Sync all configured sources, or one. Append `-- --full` to ignore the watermark and re-sync everything. Exits 1 if any source errored. |
+| `npm run tool -- <name> [--flag value]` | Run one tool locally and print its JSON. Without a name it lists the available tools. |
+| `npm run ask -- "<question>"` | Ask the Claude agent (tools run in-process). Tools used, tokens and latency go to stderr. |
+| `npm run serve` | MCP server over stdio. |
+| `npm run eval` | End-to-end agent evals against fixture data. Needs `ANTHROPIC_API_KEY`; costs tokens. |
+| `npm run check` | Everything CI runs: lint, typecheck, tests with a coverage floor. |
+| `npm run build` | Compile to `dist/` (`node dist/main.js <command>`). |
 
-### Servidor MCP (expone ambas tools vía protocolo MCP)
-npx tsx src/mcp-server.ts
+Exit codes: `0` success · `1` runtime failure · `2` usage error.
 
-### Tests
-npm test
+### Use it from Claude Desktop
 
-## Decisiones y trade-offs
+```bash
+npm run build
+```
 
-- **SQLite en vez de JSON**: elegí SQLite porque la atomicidad de las transacciones viene prácticamente gratis, evitando problemas de corrupción si el proceso se interrumpe a mitad de escritura.
-- **Clave natural para idempotencia**: uso el `id` de GitHub como PRIMARY KEY, ya que es único e inmutable para cada repositorio. Esto permite hacer upsert real: si el repo ya existe, se actualiza; si no, se inserta.
-- **API elegida - GitHub**: elegí GitHub por su reproducibilidad y facilidad de autenticación con un PAT de solo lectura.
-- **Reintentos con backoff y jitter**: distingo errores recuperables (429/5xx) de no recuperables (401/404). Solo reintento los recuperables, con backoff progresivo (1s, 2s, 3s) más una variación aleatoria (jitter) de hasta 500ms, para evitar que múltiples reintentos coincidan exactamente en el tiempo.
-- **node:sqlite en vez de better-sqlite3**: better-sqlite3 requería compilar con Python, que no tenía configurado. node:sqlite viene integrado en Node.js (v22+) sin dependencias externas ni compilación.
-- **Servidor MCP**: expuse dos tools (`getTopItems` y `searchByName`) como servidor MCP (stdio) usando el SDK oficial de Anthropic, permitiendo que un agente se conecte directamente y las use, replicando el patrón real de producción de Rockin.
+```jsonc
+// claude_desktop_config.json — use absolute paths (on Windows, escape backslashes: "C:\\Users\\you\\rockin-worker\\dist\\main.js")
+{
+  "mcpServers": {
+    "rockin-worker": {
+      "command": "node",
+      "args": ["/absolute/path/to/rockin-worker/dist/main.js", "serve"],
+      "env": { "DB_PATH": "/absolute/path/to/rockin-worker/data.db" }
+    }
+  }
+}
+```
 
-## Governance
+Run `npm run sync` first — the server only serves what has been synced.
 
-- **Mínimo privilegio**: el token usado tiene scope `public_repo` (solo lectura de repositorios públicos), sin permisos de escritura ni acceso a datos privados.
-- **Sin PII**: los datos sincronizados (id, nombre, estrellas de repositorios) no contienen información personal identificable.
-- **Auditoría**: el resumen de ejecución del sync (`fetched, inserted, updated, skipped, errors, apiCalls, durationMs`) sirve como registro auditable mínimo de cada ejecución.
-- **Coste controlado**: existe un tope `maxPages` (actualmente 5) como válvula de seguridad frente a volúmenes inesperados de datos.
+### Docker
 
-## Qué haría con más tiempo
+```bash
+docker build -t rockin-worker .
+docker run --rm --env-file .env -v rockin-data:/data rockin-worker sync all
+docker run -i --rm -v rockin-data:/data rockin-worker serve      # -i keeps stdin open for stdio
+```
 
-- Implementar sync incremental usando un watermark (`updated_after`) para reducir el número de llamadas a la API en sincronizaciones sucesivas.
-- Añadir más tests, incluyendo el comportamiento de la Tool con el caso vacío y del servidor MCP.
+The image runs as a non-root user and keeps its database and logs in the `/data` volume.
 
-## Tiempo dedicado
+## How it works
 
-Aproximadamente 9-10 horas, repartido en dos sesiones (sábado y domingo).
+**Sync engine** ([`src/core/sync/engine.ts`](src/core/sync/engine.ts)) owns the loop; a source only supplies an adapter (`fetchPage`, `parse`, `upsert` — see [`src/sources/github/adapter.ts`](src/sources/github/adapter.ts)). Guarantees:
+
+- **Incremental.** A per-source watermark lets a run stop paginating as soon as it reaches already-synced records.
+- **At-least-once, idempotent.** Records *equal* to the watermark are revisited on purpose (Notion timestamps have minute granularity, so a same-minute edit would otherwise be lost). Upserts are atomic `INSERT … ON CONFLICT DO UPDATE`.
+- **No silent data loss.** A `capped` or failed run never advances the watermark — doing so would skip the older, unseen records forever.
+- **Transactional pages.** Each page commits or rolls back as a unit; the summary counts only committed rows.
+- **Validated input.** Every upstream record is parsed with Zod. One malformed record is skipped and counted; an unexpected response envelope aborts the run.
+- **Resilient HTTP.** Per-attempt timeouts; retries on 429/5xx/network errors, honoring `Retry-After` (seconds or HTTP-date) with backoff + jitter otherwise.
+- **Observable.** Every run appends one structured line to `logs/sync-history.jsonl`.
+
+**Tools** are defined once ([`src/tools/define.ts`](src/tools/define.ts), one file per source in [`src/tools/`](src/tools)) and consumed by the MCP server, the agent and the evals, so the name, description and schema the model sees cannot drift between them. Model-produced arguments are validated before execution, and MCP tools are annotated `readOnlyHint` so hosts can safely auto-approve them.
+
+**Agent** ([`src/agent/agent.ts`](src/agent/agent.ts)) is a minimal tool-use loop on the Anthropic Messages API with a turn cap, output truncation, and tool errors returned to the model rather than thrown.
+
+**Evals** ([`src/evals`](src/evals)) run the real agent against deterministic fixtures in a throwaway in-memory database and score each case on *routing* (right tool called?) and *grounding* (does the answer contain what the tool returned?). Cases include an honest-empty-result check and a **prompt-injection** case: a Notion page title that tries to hijack the agent.
+
+Design rationale, the sync algorithm, invariants, failure modes and a guide to adding a source are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Project layout
+
+```
+src/
+  config/     validated environment
+  infra/      db (WAL, migrations) · http (retries) · logging
+  core/       sync engine + SyncAdapter port, sync state, query helpers
+  sources/    github/ · notion/  (adapter, store, queries)
+  tools/      tool framework, per-source tool definitions, registry
+  mcp/  agent/  evals/  cli/  main.ts
+```
+
+Packages depend only downward; a test ([`architecture.test.ts`](src/architecture.test.ts)) enforces the layering, rejects import cycles and keeps sources isolated from each other.
+
+## Security model
+
+- **Prompt injection.** Synced text (repository names, page titles) is attacker-influenceable and reaches the model. Mitigations: tools are read-only, the system prompt frames tool output as data rather than instructions, and an eval regression-tests it. This reduces the risk; it does not eliminate it.
+- **Credential containment.** Pagination links come from the server. The GitHub adapter refuses to follow one to a different origin, so the bearer token cannot be exfiltrated.
+- **Least privilege.** Read-only credentials; tools cannot write and never call upstream APIs.
+- **Hermetic tests.** Tests run against an in-memory database and never read `.env`, so they cannot touch your data or use your credentials.
+- **stdout is the MCP protocol channel.** Diagnostics go to stderr, and `dotenv` runs in quiet mode.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Testing and quality
+
+```bash
+npm run check          # lint + typecheck + tests + coverage floor — the same as CI
+npm test               # tests only
+npm run test:coverage  # tests with a coverage report
+```
+
+- TypeScript `strict` with `noUncheckedIndexedAccess`, ESM, Biome for lint and formatting.
+- Test areas: the sync engine (pagination, watermark, rollback, capping), both source adapters against mocked HTTP, the retry client (fake timers), migrations against a hand-built legacy schema, the agent loop against a scripted model, the CLI, and a **real MCP integration test** that spawns the server over stdio and drives it with the official client.
+- CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): lint → typecheck → build → tests with coverage → Docker build and smoke test. Dependabot covers npm, Actions and Docker.
+- Evals are **not** part of `npm test` or CI: they call a paid API and are nondeterministic. Run `npm run eval` before demos and after changing tool descriptions or the system prompt.
+
+## Known limitations
+
+- **Upstream deletions are not propagated.** Records deleted upstream stay in the store until a tombstone/reconcile pass exists.
+- **Star counts can lag.** GitHub's `updated_at` may not change when a repository is starred, so an incremental sync can miss pure star changes. Run `sync -- --full` periodically.
+- **Notion search** only returns pages shared with the integration, and its index is eventually consistent.
+- **SQLite is single-writer.** Fine here (WAL lets the MCP server read during a sync); not a multi-tenant design.
+- **Large first syncs.** A first sync of more than `SYNC_MAX_PAGES` pages is capped and never advances the watermark; raise the budget to backfill. A resumable backfill cursor is on the roadmap.
+
+## Roadmap
+
+Resumable backfill cursor · tombstones for upstream deletions · streamable-HTTP MCP transport · eval score history and regression tracking.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Release notes are in [CHANGELOG.md](CHANGELOG.md).
+
+## Author and license
+
+Created and maintained by [Bryant Giorgini](https://github.com/BryantJavaInt).
+
+© 2026 Bryant Giorgini. Released under the [MIT License](LICENSE): you may use, modify and distribute this software, provided the copyright notice and license text are preserved in all copies and derivative works. Every source file carries an SPDX license identifier and copyright line, and `node dist/main.js --version` prints the author and license. To cite this project, use GitHub's "Cite this repository" button ([CITATION.cff](CITATION.cff)).

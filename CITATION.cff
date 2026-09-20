@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "rockin-worker"
+abstract: "Incremental API-to-SQLite sync worker that serves its data to LLM agents over the Model Context Protocol, with a tool-use agent loop and end-to-end evals."
+authors:
+  - family-names: Giorgini
+    given-names: Bryant
+    alias: BryantJavaInt
+repository-code: "https://github.com/BryantJavaInt/rockin-worker"
+url: "https://github.com/BryantJavaInt/rockin-worker"
+license: MIT
+keywords:
+  - mcp
+  - model-context-protocol
+  - agents
+  - llm
+  - evals

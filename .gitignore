@@ -1,4 +1,9 @@
 node_modules/
 .env
-data.db
+data.db*
 dist/
+logs/
+coverage/
+
+# Claude Code personal, per-project overrides
+.claude/settings.local.json

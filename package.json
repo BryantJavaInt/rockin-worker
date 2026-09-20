@@ -1,21 +1,64 @@
 {
   "name": "rockin-worker",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "vitest run"
+  "version": "2.0.0",
+  "description": "Incremental API-to-SQLite sync worker that serves its data to an LLM agent over MCP, with a tool-use agent loop and end-to-end evals.",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "Bryant Giorgini",
+    "url": "https://github.com/BryantJavaInt"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "homepage": "https://github.com/BryantJavaInt/rockin-worker#readme",
+  "bugs": {
+    "url": "https://github.com/BryantJavaInt/rockin-worker/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BryantJavaInt/rockin-worker.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "agent",
+    "evals",
+    "sqlite",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "rockin-worker": "dist/main.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome ci .",
+    "format": "biome check --write .",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "check": "npm run lint && npm run typecheck && npm run test:coverage",
+    "sync": "tsx src/main.ts sync all",
+    "sync:github": "tsx src/main.ts sync github",
+    "sync:notion": "tsx src/main.ts sync notion",
+    "ask": "tsx src/main.ts ask",
+    "tool": "tsx src/main.ts tool",
+    "serve": "tsx src/main.ts serve",
+    "eval": "tsx src/evals/run.ts"
+  },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
     "@types/node": "^26.2.0",
-    "ts-node": "^10.9.2",
+    "@vitest/coverage-v8": "^4.1.11",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the run in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, typecheck, build, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # node:sqlite is only unflagged on recent Node; pinned to match local development.
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      # Fail on high/critical advisories in the dependencies that ship (including transitive ones).
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      # Includes the MCP integration test (spawns the real server over stdio) and
+      # enforces the coverage floor from vitest.config.mts.
+      - run: npm run test:coverage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+
+  docker:
+    name: Docker image builds and runs
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: rockin-worker:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Smoke test: the image starts, the CLI runs, and the SQLite schema migrates in a fresh volume.
+      - run: docker run --rm rockin-worker:ci help
+      - run: docker run --rm rockin-worker:ci tool github_getTopItems

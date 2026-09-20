@@ -1,13 +1,16 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "commonjs",
-    "moduleResolution": "node",
-    "esModuleInterop": true,
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "outDir": "./dist",
-    "resolveJsonModule": true
+    "types": ["node"],
+    "noEmit": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "vitest.config.mts"]
 }
