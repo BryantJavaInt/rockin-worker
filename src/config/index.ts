@@ -13,13 +13,24 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   // Semantic search. Anthropic offers no embeddings API, so vectors come from Voyage AI.
   VOYAGE_API_KEY: z.string().optional(),
+  // Remote MCP over HTTP. The token is env-only on purpose: a command-line argument would be
+  // visible to every user on the machine (process list) and land in shell history.
+  MCP_AUTH_TOKEN: z.string().optional(),
+  MCP_HTTP_HOST: z.string().default('127.0.0.1'),
+  MCP_HTTP_PORT: z.coerce.number().int().min(0).max(65535).default(8787),
+  MCP_ALLOWED_ORIGINS: z.string().optional(),
   EMBEDDING_MODEL: z.string().default('voyage-3.5-lite'),
   // Cosine-similarity floor for semantic matches. Scales differ per model: calibrate it.
   SEMANTIC_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.25),
 });
 
 export type Config = z.infer<typeof EnvSchema>;
-export type SecretName = 'GITHUB_TOKEN' | 'NOTION_TOKEN' | 'ANTHROPIC_API_KEY' | 'VOYAGE_API_KEY';
+export type SecretName =
+  | 'GITHUB_TOKEN'
+  | 'NOTION_TOKEN'
+  | 'ANTHROPIC_API_KEY'
+  | 'VOYAGE_API_KEY'
+  | 'MCP_AUTH_TOKEN';
 
 export class ConfigError extends Error {
   override name = 'ConfigError';

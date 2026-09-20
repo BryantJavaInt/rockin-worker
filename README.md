@@ -65,6 +65,10 @@ All configuration is environment variables, read from the process environment fi
 | `VOYAGE_API_KEY` | — | Enables semantic search (embeddings come from Voyage AI; Anthropic has no embeddings API). |
 | `EMBEDDING_MODEL` | `voyage-3.5-lite` | Embedding model. Changing it re-embeds everything on the next `embed`. |
 | `SEMANTIC_MIN_SCORE` | `0.25` | Cosine-similarity floor for semantic matches. Scales differ per model — calibrate it. |
+| `MCP_AUTH_TOKEN` | — | Bearer token for `serve --http` (at least 24 characters). Environment only, never a flag. |
+| `MCP_HTTP_HOST` | `127.0.0.1` | Interface `serve --http` binds to (`--host` overrides). |
+| `MCP_HTTP_PORT` | `8787` | Port for `serve --http` (`--port` overrides; `0` picks a free one). |
+| `MCP_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to call the HTTP server. Non-browser clients send no `Origin` and are unaffected. |
 | `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Model used by `ask` and `eval` (`--model` overrides it per call). |
 | `DB_PATH` | `./data.db` | SQLite file. Use `:memory:` for a throwaway database. |
 | `LOG_DIR` | `./logs` | Where `sync-history.jsonl` (one JSON line per sync run) is written. |
@@ -78,7 +82,7 @@ All configuration is environment variables, read from the process environment fi
 | `npm run embed [-- github|notion]` | Build or refresh the semantic-search index (needs `VOYAGE_API_KEY`). Incremental: only new or edited items are embedded. `sync --embed` does it right after a sync, and a worker does it every cycle once a key is set. |
 | `npm run tool -- <name> [--flag value]` | Run one tool locally and print its JSON. Without a name it lists the available tools. |
 | `npm run ask -- "<question>"` | Ask the Claude agent (tools run in-process). Tools used, tokens and latency go to stderr. |
-| `npm run serve` | MCP server over stdio. |
+| `npm run serve` | MCP server over stdio. Add `-- --http [--host h] [--port p]` for remote HTTP with bearer authentication. |
 | `npm run eval` | End-to-end agent evals against fixture data. Needs `ANTHROPIC_API_KEY`; costs tokens. |
 | `npm run check` | Everything CI runs: lint, typecheck, tests with a coverage floor. |
 | `npm run build` | Compile to `dist/` (`node dist/main.js <command>`). |
@@ -105,6 +109,24 @@ npm run build
 ```
 
 Run `npm run sync` first — the server only serves what has been synced.
+
+### Remote MCP over HTTP
+
+For clients that are not on the same machine, the same tools are available over streamable HTTP with bearer-token authentication:
+
+```bash
+export MCP_AUTH_TOKEN="$(openssl rand -hex 32)"     # required, at least 24 characters
+npm run serve -- --http --port 8787                 # binds to 127.0.0.1 by default
+```
+
+```bash
+curl -s http://127.0.0.1:8787/mcp \
+  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+The server fails closed (it refuses to start without a token), never accepts the token as a command-line argument (it would appear in the process list and shell history), compares it in constant time *before* reading the request body, and validates `Host` and `Origin` as the MCP specification requires against DNS-rebinding. It is stateless (no sessions), POST-only, and caps request bodies. It speaks plain HTTP: for anything other than loopback, put a TLS-terminating reverse proxy in front — a bearer token over cleartext is readable on the network, and the server warns when bound to a non-loopback address. `GET /healthz` is an unauthenticated liveness probe.
 
 ### Docker
 

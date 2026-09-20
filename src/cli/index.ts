@@ -10,6 +10,7 @@ import { describeError } from '../core/errors.js';
 import { indexDocuments } from '../core/search/indexer.js';
 import { runEvery } from '../core/sync/watch.js';
 import { getEmbeddingProvider } from '../infra/embeddings/provider.js';
+import { serveHttp } from '../mcp/http.js';
 import { serveStdio } from '../mcp/server.js';
 import { SOURCE_NAMES, SOURCES, type SourceName } from '../sources/index.js';
 import { type Tool, toInputJsonSchema } from '../tools/define.js';
@@ -26,7 +27,8 @@ Usage:
   rockin-worker embed [github|notion|all]           Build/refresh the semantic-search index (needs VOYAGE_API_KEY)
   rockin-worker ask "<question>" [--model <id>]     Ask the Claude agent, backed by the tools
   rockin-worker tool <name> [--flag value | json]   Run one tool locally and print its JSON
-  rockin-worker serve                               Start the MCP server on stdio
+  rockin-worker serve [--http] [--host h] [--port p] Start the MCP server: stdio by default, or HTTP
+                                                    (needs MCP_AUTH_TOKEN; binds to 127.0.0.1 unless told otherwise)
   rockin-worker version                             Show version, author and license
   rockin-worker help
 
@@ -161,6 +163,53 @@ async function syncCommand(args: string[], signal?: AbortSignal): Promise<number
   return 0;
 }
 
+const MIN_TOKEN_LENGTH = 24;
+
+async function serveCommand(args: string[], signal?: AbortSignal): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      http: { type: 'boolean', default: false },
+      host: { type: 'string' },
+      port: { type: 'string' },
+    },
+  });
+
+  if (!values.http) {
+    if (values.host || values.port)
+      throw new UsageError('--host and --port only apply with --http.');
+    await serveStdio(undefined, signal);
+    return 0;
+  }
+
+  const config = loadConfig();
+  const token = requireSecret(config, 'MCP_AUTH_TOKEN');
+  if (token.length < MIN_TOKEN_LENGTH) {
+    throw new ConfigError(
+      `MCP_AUTH_TOKEN must be at least ${MIN_TOKEN_LENGTH} characters. Generate one with: openssl rand -hex 32`,
+    );
+  }
+
+  const port = values.port === undefined ? config.MCP_HTTP_PORT : Number(values.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new UsageError(`--port must be an integer between 0 and 65535, got "${values.port}".`);
+  }
+
+  await serveHttp(
+    {
+      token,
+      host: values.host ?? config.MCP_HTTP_HOST,
+      port,
+      allowedOrigins: (config.MCP_ALLOWED_ORIGINS ?? '')
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+    },
+    signal,
+  );
+  return 0;
+}
+
 async function askCommand(args: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
@@ -280,8 +329,7 @@ export async function run(argv: string[], deps: { signal?: AbortSignal } = {}): 
       case 'tool':
         return await toolCommand(rest);
       case 'serve':
-        await serveStdio(undefined, deps.signal);
-        return 0;
+        return await serveCommand(rest, deps.signal);
       case 'version':
       case '--version':
       case '-v':
