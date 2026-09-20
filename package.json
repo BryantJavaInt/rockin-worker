@@ -57,9 +57,9 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.6.1",
     "@vitest/coverage-v8": "^4.1.11",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
@@ -73,6 +73,6 @@
     "@opentelemetry/sdk-trace-node": "^2.11.0",
     "dotenv": "^17.4.2",
     "jose": "^6.2.12",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   }
 }
