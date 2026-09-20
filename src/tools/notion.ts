@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Bryant Giorgini
 
 import { z } from 'zod';
-import { getRecentItems, searchByName } from '../sources/notion/queries.js';
+import { queryResultSchema } from '../core/query.js';
+import { getRecentItems, pageItemSchema, searchByName } from '../sources/notion/queries.js';
 import { defineTool } from './define.js';
 
 export const notionTools = [
@@ -21,6 +22,7 @@ export const notionTools = [
         .optional()
         .describe('How many pages to return (default 10, maximum 20).'),
     }),
+    output: queryResultSchema(pageItemSchema),
     run: ({ limit }) => getRecentItems({ limit }),
   }),
 
@@ -34,6 +36,7 @@ export const notionTools = [
     input: z.object({
       query: z.string().min(1).describe('Text to look for inside the page title.'),
     }),
+    output: queryResultSchema(pageItemSchema),
     run: ({ query }) => searchByName({ query }),
   }),
 ];

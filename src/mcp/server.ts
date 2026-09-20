@@ -9,10 +9,12 @@ import { describeError } from '../core/errors.js';
 import type { Tool } from '../tools/define.js';
 import { TOOLS } from '../tools/registry.js';
 
-function textResult(payload: unknown, isError = false) {
+function textResult(payload: unknown, options: { isError?: boolean; structured?: boolean } = {}) {
   return {
+    // Text stays for hosts that ignore structuredContent (older clients, some UIs).
     content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
-    ...(isError ? { isError: true } : {}),
+    ...(options.structured ? { structuredContent: payload as Record<string, unknown> } : {}),
+    ...(options.isError ? { isError: true } : {}),
   };
 }
 
@@ -36,14 +38,15 @@ export function createMcpServer(tools: readonly Tool[] = TOOLS): McpServer {
         title: tool.title,
         description: tool.description,
         inputSchema: tool.input.shape,
+        ...(tool.output ? { outputSchema: tool.output.shape } : {}),
         // Tells MCP clients these tools can be auto-approved: they only read a local store.
         annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
       },
       async (args) => {
         try {
-          return textResult(tool.execute(args));
+          return textResult(tool.execute(args), { structured: tool.output !== undefined });
         } catch (err) {
-          return textResult({ error: describeError(err) }, true);
+          return textResult({ error: describeError(err) }, { isError: true });
         }
       },
     );

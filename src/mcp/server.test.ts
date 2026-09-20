@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { seedFixtures } from '../evals/fixtures.js';
 import { closeDb } from '../infra/db/connection.js';
+import { resetDb } from '../testing/helpers.js';
 import { defineTool } from '../tools/define.js';
 import { TOOLS } from '../tools/registry.js';
 import { createMcpServer, serveStdio } from './server.js';
@@ -166,5 +167,40 @@ describe('serveStdio shutdown', () => {
     controller.abort();
 
     await expect(serveStdio(createMcpServer(), controller.signal)).resolves.toBeUndefined();
+  });
+});
+
+describe('structured output', () => {
+  async function connectSeeded() {
+    resetDb();
+    seedFixtures();
+    const server = createMcpServer();
+    const client = new Client({ name: 'structured', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    return client;
+  }
+
+  it('advertises an outputSchema for every tool', async () => {
+    const client = await connectSeeded();
+
+    for (const tool of (await client.listTools()).tools) {
+      expect(tool.outputSchema?.type, tool.name).toBe('object');
+      expect(tool.outputSchema?.properties, tool.name).toHaveProperty('items');
+    }
+  });
+
+  it('returns typed structuredContent (validated by the client) alongside the text fallback', async () => {
+    const client = await connectSeeded();
+
+    const result = await client.callTool({ name: 'github_getTopItems', arguments: { limit: 2 } });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({ source: 'github', count: 2 });
+    const items = (result.structuredContent as { items: Array<{ name: string }> }).items;
+    expect(items.map((i) => i.name)).toEqual(['flagship-app', 'side-project']);
+    expect(JSON.parse((result.content as Array<{ text: string }>)[0]?.text ?? '{}')).toEqual(
+      result.structuredContent,
+    );
   });
 });

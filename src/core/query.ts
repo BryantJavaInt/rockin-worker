@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Bryant Giorgini
 
+import { z } from 'zod';
 import { getSyncState } from './sync/state.js';
 
 // Shared building blocks for the read-only queries every source exposes.
@@ -14,6 +15,16 @@ export type QueryResult<T> = {
   /** Present when there are no items, to keep the model honest about *why*. */
   note?: string;
 };
+
+/** Zod schema of the envelope every query returns; `item` describes one element of `items`. */
+export const queryResultSchema = <I extends z.ZodType>(item: I) =>
+  z.object({
+    source: z.string(),
+    lastSyncAt: z.string().nullable(),
+    count: z.number().int(),
+    items: z.array(item),
+    note: z.string().optional(),
+  });
 
 export function buildResult<T>(source: string, items: T[]): QueryResult<T> {
   const { lastSuccessAt } = getSyncState(source);

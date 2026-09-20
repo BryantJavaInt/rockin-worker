@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Bryant Giorgini
 
+import { z } from 'zod';
 import {
   buildResult,
   clampLimit,
@@ -10,7 +11,13 @@ import {
 } from '../../core/query.js';
 import { getDb } from '../../infra/db/connection.js';
 
-export type PageItem = { id: string; title: string; url: string; lastEditedTime: string };
+export const pageItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  url: z.string(),
+  lastEditedTime: z.string(),
+});
+export type PageItem = z.infer<typeof pageItemSchema>;
 
 // Same read-only contract as the GitHub queries: local store only.
 

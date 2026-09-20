@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Bryant Giorgini
 
 import { z } from 'zod';
-import { getTopItems, searchByName } from '../sources/github/queries.js';
+import { queryResultSchema } from '../core/query.js';
+import { getTopItems, repoItemSchema, searchByName } from '../sources/github/queries.js';
 import { defineTool } from './define.js';
 
 export const githubTools = [
@@ -21,6 +22,7 @@ export const githubTools = [
         .optional()
         .describe('How many repositories to return (default 10, maximum 20).'),
     }),
+    output: queryResultSchema(repoItemSchema),
     run: ({ limit }) => getTopItems({ limit }),
   }),
 
@@ -34,6 +36,7 @@ export const githubTools = [
     input: z.object({
       query: z.string().min(1).describe('Text to look for inside the repository name.'),
     }),
+    output: queryResultSchema(repoItemSchema),
     run: ({ query }) => searchByName({ query }),
   }),
 ];

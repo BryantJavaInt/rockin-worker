@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { seedFixtures } from '../evals/fixtures.js';
 import { upsertRepo } from '../sources/github/store.js';
 import { resetDb } from '../testing/helpers.js';
 import { defineTool, toInputJsonSchema } from './define.js';
@@ -62,5 +63,38 @@ describe('tool execution', () => {
     });
 
     expect(tool.execute({ n: '21' })).toBe(42);
+  });
+});
+
+describe('tool output contracts', () => {
+  beforeEach(resetDb);
+
+  const sampleArgs: Record<string, unknown> = {
+    github_getTopItems: { limit: 3 },
+    github_searchByName: { query: 'a' },
+    notion_getRecentItems: { limit: 3 },
+    notion_searchByName: { query: 'a' },
+  };
+
+  it('every tool declares an output schema and a sample call for this test', () => {
+    for (const tool of TOOLS) {
+      expect(tool.output, tool.name).toBeDefined();
+      expect(sampleArgs[tool.name], `add sample args for ${tool.name}`).toBeDefined();
+    }
+  });
+
+  it('real results conform to the declared schema — with data, and when empty', () => {
+    for (const tool of TOOLS) {
+      expect(
+        () => tool.output?.parse(tool.execute(sampleArgs[tool.name])),
+        `${tool.name} (empty)`,
+      ).not.toThrow();
+    }
+
+    seedFixtures();
+    for (const tool of TOOLS) {
+      const result = tool.output?.parse(tool.execute(sampleArgs[tool.name])) as { count: number };
+      expect(result.count, `${tool.name} (seeded)`).toBeGreaterThan(0);
+    }
   });
 });

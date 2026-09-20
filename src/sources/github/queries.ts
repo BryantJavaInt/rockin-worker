@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Bryant Giorgini
 
+import { z } from 'zod';
 import {
   buildResult,
   clampLimit,
@@ -10,7 +11,8 @@ import {
 } from '../../core/query.js';
 import { getDb } from '../../infra/db/connection.js';
 
-export type RepoItem = { id: number; name: string; stars: number };
+export const repoItemSchema = z.object({ id: z.number(), name: z.string(), stars: z.number() });
+export type RepoItem = z.infer<typeof repoItemSchema>;
 
 // Read-only: these functions only ever query the local store, never GitHub.
 // They stay fast and keep working when the upstream API is down.
