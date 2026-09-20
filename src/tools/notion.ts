@@ -3,7 +3,7 @@
 
 import { z } from 'zod';
 import { queryResultSchema } from '../core/query.js';
-import { getRecentItems, pageItemSchema, searchByName } from '../sources/notion/queries.js';
+import { getRecentItems, pageItemSchema, search } from '../sources/notion/queries.js';
 import { defineTool } from './define.js';
 
 export const notionTools = [
@@ -27,16 +27,16 @@ export const notionTools = [
   }),
 
   defineTool({
-    name: 'notion_searchByName',
-    title: 'Search Notion pages by title',
+    name: 'notion_search',
+    title: 'Search Notion pages',
     description:
-      "Finds the user's synced Notion pages whose title contains the given text " +
-      '(case-insensitive substring). Use when the user names, or partly names, a specific page or document. ' +
-      'Reads a local snapshot; it does not call the Notion API.',
+      "Searches the titles of the user's synced Notion pages, best match first (ranked full-text " +
+      'search with stemming). Use when the user names, or partly names, a page or document, or ' +
+      'asks for notes about a topic. Reads a local snapshot; it does not call the Notion API.',
     input: z.object({
-      query: z.string().min(1).describe('Text to look for inside the page title.'),
+      query: z.string().min(1).describe('Words to look for in the page title. No special syntax.'),
     }),
     output: queryResultSchema(pageItemSchema),
-    run: ({ query }) => searchByName({ query }),
+    run: ({ query }) => search({ query }),
   }),
 ];

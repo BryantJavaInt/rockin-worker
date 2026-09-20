@@ -88,7 +88,7 @@ describe('MCP server over stdio', () => {
 
   it('matches search input literally', async () => {
     const result = await client.callTool({
-      name: 'notion_searchByName',
+      name: 'notion_search',
       arguments: { query: 'roadmap' },
     });
     const payload = JSON.parse((result.content as Array<{ text: string }>)[0]?.text ?? '{}');
@@ -97,7 +97,7 @@ describe('MCP server over stdio', () => {
   });
 
   it('reports invalid arguments as a tool error, not a crash', async () => {
-    const result = await client.callTool({ name: 'github_searchByName', arguments: { query: '' } });
+    const result = await client.callTool({ name: 'github_search', arguments: { query: '' } });
 
     expect(result.isError).toBe(true);
   });

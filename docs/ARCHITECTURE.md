@@ -100,6 +100,8 @@ Migrations are append-only SQL in `infra/db/migrations.ts`; version `n` is store
 
 **Strict at the boundary, tolerant inside.** External and LLM-produced data is validated (Zod) at the edge. One bad record is skipped and counted; a wrong response *envelope* aborts, because that means the integration itself is broken.
 
+**Ranked full-text search in SQLite (FTS5), not a search service.** External-content FTS5 tables index repository name/description/topics and Notion titles, kept in step by triggers, weighted with BM25 (name > description > topics) and tokenized with the Porter stemmer. It adds no dependency and works offline. Two consequences: `notion_pages` carries an `AUTOINCREMENT` surrogate key (an external-content index needs an integer rowid that never changes, which a `TEXT` primary key cannot provide), and the query builder quotes every word so untrusted text cannot inject FTS operators. Substring matching remains as a fallback because a word index cannot see inside words.
+
 **Structured tool output.** Tools declare an output schema derived from the same Zod types as their queries; the MCP server advertises it and returns `structuredContent` next to the text content (kept for hosts that ignore structured output). A contract test keeps the schema and the real output in agreement.
 
 **Prompt caching in the agent.** The system prompt and tool definitions are identical on every turn, so they are marked as cache breakpoints. This is a cost/latency optimization only — prompts below the minimum cacheable length are not cached and nothing fails.

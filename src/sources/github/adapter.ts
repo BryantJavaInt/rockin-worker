@@ -14,6 +14,10 @@ const RepoSchema = z.object({
   name: z.string(),
   stargazers_count: z.number(),
   updated_at: z.string(),
+  description: z.string().nullish(),
+  language: z.string().nullish(),
+  topics: z.array(z.string()).optional(),
+  html_url: z.string().optional(),
 });
 
 /** Extracts the `rel="next"` URL from a GitHub `Link` header, or null on the last page. */
@@ -74,6 +78,10 @@ export function createGithubAdapter(token: string, baseUrl = DEFAULT_BASE_URL): 
           name: repo.name,
           stars: repo.stargazers_count,
           syncedAt: new Date().toISOString(),
+          description: repo.description ?? null,
+          language: repo.language ?? null,
+          topics: repo.topics ?? [],
+          url: repo.html_url ?? null,
         },
       };
     },

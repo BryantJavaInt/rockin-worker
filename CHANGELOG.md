@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Format based on [Keep a
 ## [Unreleased]
 
 ### Added
+- Ranked full-text search (FTS5, Porter stemming, BM25) over repository name/description/topics and Notion titles, replacing substring matching, with a substring fallback. GitHub sync now also stores description, language, topics and URL.
 - Resumable backfill: a sync pass that exceeds the page budget saves its cursor and resumes on the next run, so large accounts finish in several runs instead of never advancing. Deletions are now detected with the pass start time instead of a set of seen keys, which also works across runs (`SyncAdapter.keyOf` is removed; `prune` takes the pass start time).
 - `sync --full` prunes records deleted upstream (optional `keyOf`/`prune` on `SyncAdapter`), only after a complete, error-free, uncapped run and never on an empty upstream response.
 - Worker mode: `sync --every 15m` with jitter and non-overlapping cycles; failing cycles are logged and do not stop the worker. `core/duration` and `core/sync/watch` are new pure, tested modules.
@@ -13,6 +14,7 @@ All notable changes to this project are documented here. Format based on [Keep a
 - Prompt caching for the agent (system prompt and tool definitions), with cache read/write token accounting.
 
 ### Changed
+- **Breaking:** `github_searchByName` / `notion_searchByName` are now `github_search` / `notion_search`, since they search more than names. Migration v4 rebuilds `notion_pages` with a surrogate integer key.
 - The HTTP client handles GitHub primary rate limits (`403` + `X-RateLimit-Reset`) and gives up on any server-directed wait longer than `maxRetryWaitMs` (default 60 s) instead of blocking. `isRetryable` now receives the whole `Response`.
 
 ## [2.0.0] — 2026-09-20

@@ -10,7 +10,9 @@ describe('withTransaction', () => {
 
   it('commits every write when the callback succeeds', () => {
     withTransaction(() => {
-      getDb().exec("INSERT INTO repos VALUES (1, 'a', 1, 'x'), (2, 'b', 2, 'x')");
+      getDb().exec(
+        "INSERT INTO repos (id, name, stars, syncedAt) VALUES (1, 'a', 1, 'x'), (2, 'b', 2, 'x')",
+      );
     });
 
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM repos').get()).toEqual({ n: 2 });
@@ -19,7 +21,7 @@ describe('withTransaction', () => {
   it('rolls back every write when the callback throws', () => {
     expect(() =>
       withTransaction(() => {
-        getDb().exec("INSERT INTO repos VALUES (1, 'a', 1, 'x')");
+        getDb().exec("INSERT INTO repos (id, name, stars, syncedAt) VALUES (1, 'a', 1, 'x')");
         throw new Error('boom');
       }),
     ).toThrow('boom');

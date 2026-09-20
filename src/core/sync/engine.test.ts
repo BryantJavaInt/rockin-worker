@@ -263,7 +263,9 @@ describe('runSync', () => {
       [[rec(1, '2026-03-03T00:00:00Z'), rec(2, '2026-03-02T00:00:00Z')]],
       {
         upsert(value) {
-          getDb().exec(`INSERT INTO repos VALUES (${value.id}, 'r', 1, 'x')`);
+          getDb().exec(
+            `INSERT INTO repos (id, name, stars, syncedAt) VALUES (${value.id}, 'r', 1, 'x')`,
+          );
           if (value.id === 2) throw new Error('disk full');
           return 'inserted';
         },

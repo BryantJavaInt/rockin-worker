@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { saveSyncState } from '../../core/sync/state.js';
 import { resetDb } from '../../testing/helpers.js';
-import { getRecentItems, searchByName } from './queries.js';
+import { getRecentItems, search } from './queries.js';
 import { upsertPage } from './store.js';
 
 const now = '2026-03-01T00:00:00Z';
@@ -37,7 +37,7 @@ describe('notion queries', () => {
     addPage('a', 'Q3 Roadmap', '2026-01-01T00:00:00.000Z');
     addPage('b', 'Notes', '2026-01-01T00:00:00.000Z');
 
-    expect(searchByName({ query: 'roadmap' }).items.map((i) => i.id)).toEqual(['a']);
-    expect(searchByName({ query: '%' }).items).toHaveLength(0);
+    expect(search({ query: 'roadmap' }).items.map((i) => i.id)).toEqual(['a']);
+    expect(search({ query: '%' }).items).toHaveLength(0);
   });
 });

@@ -47,6 +47,69 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE sync_state ADD COLUMN passFull INTEGER;
   ALTER TABLE sync_state ADD COLUMN passFetched INTEGER;
   `,
+  // v4: richer GitHub metadata, a stable integer key for Notion pages, and ranked full-text
+  // search. External-content FTS5 indexes reference rows by an integer rowid that must never
+  // change, so notion_pages (TEXT primary key) first gets an AUTOINCREMENT surrogate key.
+  // Triggers keep each index in step, and a final 'rebuild' indexes rows that already exist.
+  `
+  ALTER TABLE repos ADD COLUMN description TEXT;
+  ALTER TABLE repos ADD COLUMN language TEXT;
+  ALTER TABLE repos ADD COLUMN topics TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE repos ADD COLUMN url TEXT;
+
+  CREATE TABLE notion_pages_v4 (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    lastEditedTime TEXT NOT NULL,
+    syncedAt TEXT NOT NULL
+  );
+  INSERT INTO notion_pages_v4 (id, title, url, lastEditedTime, syncedAt)
+    SELECT id, title, url, lastEditedTime, syncedAt FROM notion_pages;
+  DROP TABLE notion_pages;
+  ALTER TABLE notion_pages_v4 RENAME TO notion_pages;
+  CREATE INDEX IF NOT EXISTS idx_notion_pages_edited ON notion_pages(lastEditedTime DESC);
+
+  CREATE VIRTUAL TABLE repos_fts USING fts5(
+    name, description, topics,
+    content='repos', content_rowid='id',
+    tokenize='porter unicode61 remove_diacritics 2'
+  );
+  CREATE TRIGGER repos_fts_ai AFTER INSERT ON repos BEGIN
+    INSERT INTO repos_fts(rowid, name, description, topics)
+    VALUES (new.id, new.name, new.description, new.topics);
+  END;
+  CREATE TRIGGER repos_fts_ad AFTER DELETE ON repos BEGIN
+    INSERT INTO repos_fts(repos_fts, rowid, name, description, topics)
+    VALUES ('delete', old.id, old.name, old.description, old.topics);
+  END;
+  CREATE TRIGGER repos_fts_au AFTER UPDATE ON repos BEGIN
+    INSERT INTO repos_fts(repos_fts, rowid, name, description, topics)
+    VALUES ('delete', old.id, old.name, old.description, old.topics);
+    INSERT INTO repos_fts(rowid, name, description, topics)
+    VALUES (new.id, new.name, new.description, new.topics);
+  END;
+
+  CREATE VIRTUAL TABLE notion_fts USING fts5(
+    title,
+    content='notion_pages', content_rowid='seq',
+    tokenize='porter unicode61 remove_diacritics 2'
+  );
+  CREATE TRIGGER notion_fts_ai AFTER INSERT ON notion_pages BEGIN
+    INSERT INTO notion_fts(rowid, title) VALUES (new.seq, new.title);
+  END;
+  CREATE TRIGGER notion_fts_ad AFTER DELETE ON notion_pages BEGIN
+    INSERT INTO notion_fts(notion_fts, rowid, title) VALUES ('delete', old.seq, old.title);
+  END;
+  CREATE TRIGGER notion_fts_au AFTER UPDATE ON notion_pages BEGIN
+    INSERT INTO notion_fts(notion_fts, rowid, title) VALUES ('delete', old.seq, old.title);
+    INSERT INTO notion_fts(rowid, title) VALUES (new.seq, new.title);
+  END;
+
+  INSERT INTO repos_fts(repos_fts) VALUES ('rebuild');
+  INSERT INTO notion_fts(notion_fts) VALUES ('rebuild');
+  `,
 ];
 
 export function migrate(db: DatabaseSync): void {

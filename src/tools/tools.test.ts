@@ -40,7 +40,7 @@ describe('tool execution', () => {
   beforeEach(resetDb);
 
   it('validates untrusted arguments before running', () => {
-    const tool = findTool('github_searchByName');
+    const tool = findTool('github_search');
 
     expect(() => tool?.execute({ query: '' })).toThrow(z.ZodError);
     expect(() => tool?.execute({})).toThrow(z.ZodError);
@@ -71,9 +71,9 @@ describe('tool output contracts', () => {
 
   const sampleArgs: Record<string, unknown> = {
     github_getTopItems: { limit: 3 },
-    github_searchByName: { query: 'a' },
+    github_search: { query: 'a' },
     notion_getRecentItems: { limit: 3 },
-    notion_searchByName: { query: 'a' },
+    notion_search: { query: 'a' },
   };
 
   it('every tool declares an output schema and a sample call for this test', () => {

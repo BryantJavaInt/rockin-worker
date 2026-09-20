@@ -3,7 +3,7 @@
 
 import { z } from 'zod';
 import { queryResultSchema } from '../core/query.js';
-import { getTopItems, repoItemSchema, searchByName } from '../sources/github/queries.js';
+import { getTopItems, repoItemSchema, search } from '../sources/github/queries.js';
 import { defineTool } from './define.js';
 
 export const githubTools = [
@@ -27,16 +27,22 @@ export const githubTools = [
   }),
 
   defineTool({
-    name: 'github_searchByName',
-    title: 'Search GitHub repositories by name',
+    name: 'github_search',
+    title: 'Search GitHub repositories',
     description:
-      "Finds the user's synced GitHub repositories whose name contains the given text " +
-      '(case-insensitive substring). Use when the user names, or partly names, a specific repository. ' +
+      "Searches the user's synced GitHub repositories by name, description and topics, best match " +
+      'first (ranked full-text search with stemming, so "habits" finds "habit tracker"). Use when ' +
+      'the user names a repository or describes what a project does or is built with. ' +
       'Reads a local snapshot; it does not call the GitHub API.',
     input: z.object({
-      query: z.string().min(1).describe('Text to look for inside the repository name.'),
+      query: z
+        .string()
+        .min(1)
+        .describe(
+          'Words to look for: part of a name, or what the project does. No special syntax.',
+        ),
     }),
     output: queryResultSchema(repoItemSchema),
-    run: ({ query }) => searchByName({ query }),
+    run: ({ query }) => search({ query }),
   }),
 ];

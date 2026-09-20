@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { saveSyncState } from '../../core/sync/state.js';
 import { resetDb } from '../../testing/helpers.js';
-import { getTopItems, searchByName } from './queries.js';
+import { getTopItems, search } from './queries.js';
 import { upsertRepo } from './store.js';
 
 const now = '2026-03-01T00:00:00Z';
@@ -43,15 +43,15 @@ describe('github queries', () => {
     addRepo(1, 'FinTrack', 5);
     addRepo(2, 'other', 9);
 
-    expect(searchByName({ query: 'fin' }).items.map((i) => i.name)).toEqual(['FinTrack']);
+    expect(search({ query: 'fin' }).items.map((i) => i.name)).toEqual(['FinTrack']);
   });
 
   it('treats LIKE wildcards in the query literally (a model-supplied "%" must not match everything)', () => {
     addRepo(1, 'plain', 1);
     addRepo(2, '100%_done', 1);
 
-    expect(searchByName({ query: '%' }).items.map((i) => i.name)).toEqual(['100%_done']);
-    expect(searchByName({ query: '_' }).items.map((i) => i.name)).toEqual(['100%_done']);
-    expect(searchByName({ query: 'p_ain' }).items).toHaveLength(0);
+    expect(search({ query: '%' }).items.map((i) => i.name)).toEqual(['100%_done']);
+    expect(search({ query: '_' }).items.map((i) => i.name)).toEqual(['100%_done']);
+    expect(search({ query: 'p_ain' }).items).toHaveLength(0);
   });
 });

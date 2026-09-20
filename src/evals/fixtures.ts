@@ -8,10 +8,38 @@ import { upsertPage } from '../sources/notion/store.js';
 // Fixed, known data so eval expectations are deterministic: the only moving part
 // under test is the model's behavior, never the contents of a live account.
 export const FIXTURE_REPOS = [
-  { id: 1, name: 'flagship-app', stars: 900 },
-  { id: 2, name: 'side-project', stars: 120 },
-  { id: 3, name: 'habit-tracker', stars: 45 },
-  { id: 4, name: 'dotfiles', stars: 3 },
+  {
+    id: 1,
+    name: 'flagship-app',
+    stars: 900,
+    description: 'The main product application',
+    language: 'TypeScript',
+    topics: ['product', 'web'],
+  },
+  {
+    id: 2,
+    name: 'side-project',
+    stars: 120,
+    description: 'Experiments with local-first sync',
+    language: 'Rust',
+    topics: ['crdt'],
+  },
+  {
+    id: 3,
+    name: 'habit-tracker',
+    stars: 45,
+    description: 'Track daily habits and streaks',
+    language: 'TypeScript',
+    topics: ['productivity'],
+  },
+  {
+    id: 4,
+    name: 'dotfiles',
+    stars: 3,
+    description: 'Shell and editor configuration',
+    language: 'Shell',
+    topics: [],
+  },
 ];
 
 export const FIXTURE_PAGES = [

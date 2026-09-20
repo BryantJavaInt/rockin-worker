@@ -30,7 +30,7 @@ describe('migrations', () => {
     db.exec(`
       CREATE TABLE repos (id INTEGER PRIMARY KEY, name TEXT NOT NULL, stars INTEGER NOT NULL, syncedAt TEXT NOT NULL);
       CREATE TABLE sync_state (source TEXT PRIMARY KEY, lastSyncAt TEXT NOT NULL);
-      INSERT INTO repos VALUES (1, 'legacy-repo', 7, '2026-01-01T00:00:00Z');
+      INSERT INTO repos (id, name, stars, syncedAt) VALUES (1, 'legacy-repo', 7, '2026-01-01T00:00:00Z');
       INSERT INTO sync_state VALUES ('github', '2026-01-01T00:00:00Z');
     `);
 

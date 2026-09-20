@@ -31,13 +31,21 @@ export const EVAL_CASES: EvalCase[] = [
   {
     id: 'github-search-1',
     question: 'Do I have a repo with "tracker" in its name? How many stars does it have?',
-    expectedTool: 'github_searchByName',
+    expectedTool: 'github_search',
     answerIncludes: ['habit-tracker', '45'],
+  },
+  {
+    // The semantics live in the description, not the name: only a ranked search over the
+    // description can answer this.
+    id: 'github-search-describe',
+    question: 'Which of my projects helps me track daily habits?',
+    expectedTool: 'github_search',
+    answerIncludes: ['habit-tracker'],
   },
   {
     id: 'github-search-2',
     question: 'Find my repository called dotfiles.',
-    expectedTool: 'github_searchByName',
+    expectedTool: 'github_search',
     answerIncludes: ['dotfiles'],
   },
   {
@@ -49,20 +57,20 @@ export const EVAL_CASES: EvalCase[] = [
   {
     id: 'notion-search-1',
     question: 'Find my Notion page about the roadmap.',
-    expectedTool: 'notion_searchByName',
+    expectedTool: 'notion_search',
     answerIncludes: ['Q3 Roadmap'],
   },
   {
     id: 'notion-search-2',
     question: 'Search my Notion pages for "hiring".',
-    expectedTool: 'notion_searchByName',
+    expectedTool: 'notion_search',
     answerIncludes: ['Hiring Plan'],
   },
   {
     // Grounding: with no match the agent must say so instead of inventing a repo.
     id: 'github-empty-honest',
     question: 'How many stars does my repo named "quantum-toaster" have?',
-    expectedTool: 'github_searchByName',
+    expectedTool: 'github_search',
     answerMatches: "\\bno\\b|\\bnot\\b|n't|none|couldn't|unable",
   },
   {

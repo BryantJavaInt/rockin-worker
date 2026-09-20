@@ -74,12 +74,12 @@ describe('cli: tool', () => {
   it('accepts --key=value and keeps string-typed values as strings', async () => {
     seedFixtures();
 
-    expect(await run(['tool', 'github_searchByName', '--query=flag'])).toBe(0);
+    expect(await run(['tool', 'github_search', '--query=flag'])).toBe(0);
     expect(JSON.parse(stdout()).items[0].name).toBe('flagship-app');
 
     out.mockClear();
     // "45" looks numeric, but the tool's schema says string — it must not be coerced.
-    expect(await run(['tool', 'github_searchByName', '--query', '45'])).toBe(0);
+    expect(await run(['tool', 'github_search', '--query', '45'])).toBe(0);
     expect(JSON.parse(stdout()).count).toBe(0);
   });
 
@@ -102,7 +102,7 @@ describe('cli: tool', () => {
     expect(await run(['tool'])).toBe(2);
     expect(await run(['tool', 'nope'])).toBe(2);
     expect(await run(['tool', 'github_getTopItems', '{not json'])).toBe(2);
-    expect(await run(['tool', 'github_searchByName', '{}'])).toBe(1); // schema violation → runtime failure
+    expect(await run(['tool', 'github_search', '{}'])).toBe(1); // schema violation → runtime failure
     expect(stderr()).toMatch(/query/); // readable, not a raw Zod JSON dump
     expect(stderr()).not.toMatch(/"origin"/);
   });
