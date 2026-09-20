@@ -112,38 +112,81 @@ async function runSyncImpl<T>(
     }
     pagesFetched++;
 
-    // Page-local counters are merged only after COMMIT, so a rolled-back page
-    // can never leave the summary claiming rows that were not written.
-    const local: PageStats = { fetched: 0, inserted: 0, updated: 0, skipped: 0, newest };
+    // A page is handled in three phases so that slow, fallible network work never happens
+    // inside a database transaction:
+    //   1. validate every record and find where the watermark cuts the page (pure, no I/O);
+    //   2. let the adapter enrich what will actually be stored (e.g. fetch a Notion page body);
+    //   3. write the whole page in one transaction.
+    // Counters are merged only after COMMIT, so a rolled-back page can never leave the summary
+    // claiming rows that were not written.
+    const accepted: Array<{ value: T; modifiedMs: number; iso: string }> = [];
+    let skippedInPage = 0;
     let hitWatermark = false;
+
+    for (const raw of page.records) {
+      const parsed = adapter.parse(raw);
+      const modifiedMs = parsed ? Date.parse(parsed.modifiedAt) : Number.NaN;
+
+      if (!parsed || Number.isNaN(modifiedMs)) {
+        skippedInPage++;
+        continue;
+      }
+
+      // Strictly older than the watermark → everything after is already synced.
+      // Records *equal* to it are re-processed on purpose: sources timestamp at
+      // second/minute granularity (Notion: minute), so an edit landing in the same
+      // tick as the last sync would otherwise be lost. Upserts are idempotent, so
+      // the overlap costs a few redundant writes and buys at-least-once delivery.
+      if (watermarkMs !== null && modifiedMs < watermarkMs) {
+        hitWatermark = true;
+        break;
+      }
+
+      accepted.push({ value: parsed.value, modifiedMs, iso: parsed.modifiedAt });
+    }
+
+    let values = accepted.map((record) => record.value);
+    const enrich = adapter.enrich?.bind(adapter);
+    if (enrich && values.length > 0) {
+      try {
+        const toEnrich = values;
+        values = await traced(
+          'sync.enrich_page',
+          { 'sync.source': adapter.source, 'sync.records': toEnrich.length },
+          () => enrich(toEnrich),
+        );
+        if (values.length !== accepted.length) {
+          throw new Error(
+            `enrich returned ${values.length} values for ${accepted.length} records.`,
+          );
+        }
+      } catch (err) {
+        // A transient failure (rate limit, outage) must not store half-enriched records:
+        // the page is not written, no state is saved, and the next run retries it.
+        summary.errors++;
+        summary.lastError = describeError(err);
+        console.warn(`[${adapter.source}] enrich failed: ${summary.lastError}`);
+        break;
+      }
+    }
+
+    const local: PageStats = {
+      fetched: 0,
+      inserted: 0,
+      updated: 0,
+      skipped: skippedInPage,
+      newest,
+    };
 
     try {
       withTransaction(() => {
-        for (const raw of page.records) {
-          const parsed = adapter.parse(raw);
-          const modifiedMs = parsed ? Date.parse(parsed.modifiedAt) : Number.NaN;
-
-          if (!parsed || Number.isNaN(modifiedMs)) {
-            local.skipped++;
-            continue;
-          }
-
-          // Strictly older than the watermark → everything after is already synced.
-          // Records *equal* to it are re-processed on purpose: sources timestamp at
-          // second/minute granularity (Notion: minute), so an edit landing in the same
-          // tick as the last sync would otherwise be lost. Upserts are idempotent, so
-          // the overlap costs a few redundant writes and buys at-least-once delivery.
-          if (watermarkMs !== null && modifiedMs < watermarkMs) {
-            hitWatermark = true;
-            break;
-          }
-
+        accepted.forEach((record, index) => {
           local.fetched++;
-          if (!local.newest || modifiedMs > local.newest.ms) {
-            local.newest = { ms: modifiedMs, iso: parsed.modifiedAt };
+          if (!local.newest || record.modifiedMs > local.newest.ms) {
+            local.newest = { ms: record.modifiedMs, iso: record.iso };
           }
-          local[adapter.upsert(parsed.value)]++;
-        }
+          local[adapter.upsert(values[index] as T)]++;
+        });
       });
     } catch (err) {
       summary.errors++;

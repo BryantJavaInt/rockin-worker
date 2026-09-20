@@ -123,6 +123,35 @@ export const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (source, id)
   );
   `,
+  // v6: Notion page bodies. The FTS table is rebuilt to index title + content (FTS5 columns
+  // cannot be added in place), weighted so a title hit outranks a body hit.
+  `
+  ALTER TABLE notion_pages ADD COLUMN content TEXT NOT NULL DEFAULT '';
+
+  DROP TRIGGER notion_fts_ai;
+  DROP TRIGGER notion_fts_ad;
+  DROP TRIGGER notion_fts_au;
+  DROP TABLE notion_fts;
+
+  CREATE VIRTUAL TABLE notion_fts USING fts5(
+    title, content,
+    content='notion_pages', content_rowid='seq',
+    tokenize='porter unicode61 remove_diacritics 2'
+  );
+  CREATE TRIGGER notion_fts_ai AFTER INSERT ON notion_pages BEGIN
+    INSERT INTO notion_fts(rowid, title, content) VALUES (new.seq, new.title, new.content);
+  END;
+  CREATE TRIGGER notion_fts_ad AFTER DELETE ON notion_pages BEGIN
+    INSERT INTO notion_fts(notion_fts, rowid, title, content)
+    VALUES ('delete', old.seq, old.title, old.content);
+  END;
+  CREATE TRIGGER notion_fts_au AFTER UPDATE ON notion_pages BEGIN
+    INSERT INTO notion_fts(notion_fts, rowid, title, content)
+    VALUES ('delete', old.seq, old.title, old.content);
+    INSERT INTO notion_fts(rowid, title, content) VALUES (new.seq, new.title, new.content);
+  END;
+  INSERT INTO notion_fts(notion_fts) VALUES ('rebuild');
+  `,
 ];
 
 export function migrate(db: DatabaseSync): void {

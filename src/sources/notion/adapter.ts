@@ -4,10 +4,21 @@
 import { z } from 'zod';
 import type { SyncAdapter } from '../../core/sync/adapter.js';
 import { ensureOk, fetchWithRetries } from '../../infra/http/client.js';
+import { createThrottle } from '../../infra/http/throttle.js';
+import { createContentReader } from './content.js';
 import { type NotionPage, prunePages, upsertPage } from './store.js';
 
 const DEFAULT_BASE_URL = 'https://api.notion.com';
 const NOTION_VERSION = '2022-06-28';
+// Notion allows ~3 requests per second per integration; 350ms keeps a safe margin under it.
+const CONTENT_REQUEST_INTERVAL_MS = 350;
+
+export type NotionAdapterOptions = {
+  /** Also read each changed page's body (several extra API calls per page). Off by default. */
+  syncContent?: boolean;
+  /** Minimum spacing between body requests. Tests pass 0. */
+  contentRequestIntervalMs?: number;
+};
 
 // The envelope failing validation means the integration itself is broken (auth,
 // API version drift) — the page fetch throws. One bad page inside a valid
@@ -46,7 +57,17 @@ export function extractTitle(properties: Record<string, unknown>): string {
 export function createNotionAdapter(
   token: string,
   baseUrl = DEFAULT_BASE_URL,
+  options: NotionAdapterOptions = {},
 ): SyncAdapter<NotionPage> {
+  const readContent = options.syncContent
+    ? createContentReader({
+        token,
+        baseUrl,
+        notionVersion: NOTION_VERSION,
+        throttle: createThrottle(options.contentRequestIntervalMs ?? CONTENT_REQUEST_INTERVAL_MS),
+      })
+    : null;
+
   return {
     source: 'notion',
 
@@ -98,6 +119,18 @@ export function createNotionAdapter(
           syncedAt: new Date().toISOString(),
         },
       };
+    },
+
+    // Bodies are read one page at a time: the shared throttle already serialises requests, and
+    // sequential order keeps a failure attributable to a single page.
+    async enrich(pages) {
+      if (!readContent) return pages;
+
+      const enriched: NotionPage[] = [];
+      for (const page of pages) {
+        enriched.push({ ...page, content: await readContent(page.id) });
+      }
+      return enriched;
     },
 
     upsert: upsertPage,

@@ -10,6 +10,12 @@ const EnvSchema = z.object({
   ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
   GITHUB_TOKEN: z.string().optional(),
   NOTION_TOKEN: z.string().optional(),
+  // Reading page bodies costs several Notion API calls per changed page (Notion allows ~3 requests
+  // per second), so it can be switched off to sync titles only.
+  NOTION_SYNC_CONTENT: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
   ANTHROPIC_API_KEY: z.string().optional(),
   // Semantic search. Anthropic offers no embeddings API, so vectors come from Voyage AI.
   VOYAGE_API_KEY: z.string().optional(),

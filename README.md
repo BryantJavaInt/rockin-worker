@@ -61,6 +61,7 @@ All configuration is environment variables, read from the process environment fi
 | --- | --- | --- |
 | `GITHUB_TOKEN` | — | Enables the GitHub source. |
 | `NOTION_TOKEN` | — | Enables the Notion source. |
+| `NOTION_SYNC_CONTENT` | `true` | Also sync page bodies (several extra Notion API calls per changed page, paced to ~3 requests/s). `false` syncs titles only; bodies already stored are kept. |
 | `ANTHROPIC_API_KEY` | — | Required for `ask` and `eval`. |
 | `VOYAGE_API_KEY` | — | Enables semantic search (embeddings come from Voyage AI; Anthropic has no embeddings API). |
 | `EMBEDDING_MODEL` | `voyage-3.5-lite` | Embedding model. Changing it re-embeds everything on the next `embed`. |
@@ -153,7 +154,7 @@ The image runs as a non-root user and keeps its database and logs in the `/data`
 - **Worker mode.** `--every` runs non-overlapping cycles with jitter; a failing cycle is logged and the worker carries on. SIGINT/SIGTERM let the cycle in flight finish, close the MCP transport and the database, then exit.
 - **Observable.** Every run appends one structured line to `logs/sync-history.jsonl`.
 
-**Search** is ranked, not substring matching: SQLite FTS5 with stemming ("habits" finds "habit tracker") and BM25 weighting (a name match outranks a description match) over each repository's name, description and topics and each page's title, with a substring fallback for text inside a word. Queries are turned into quoted prefix terms, so model-supplied text can never inject FTS syntax.
+**Search** is ranked, not substring matching: SQLite FTS5 with stemming ("habits" finds "habit tracker") and BM25 weighting (a name match outranks a description match) over each repository's name, description and topics and each Notion page's title and body (a title match outranks a body match, and a body match returns a `snippet` with the matched words marked «like this»), with a substring fallback for text inside a word. Queries are turned into quoted prefix terms, so model-supplied text can never inject FTS syntax.
 
 **Semantic search** is optional and additive. With `VOYAGE_API_KEY` set and `embed` run, each search also ranks the local vectors by cosine similarity and fuses both rankings with Reciprocal Rank Fusion (which needs no score calibration between BM25 and cosine), so "routine" finds a repository described as "track daily habits" although they share no word. It is never a dependency: with no key, no index, or a provider outage, search silently degrades to the lexical ranking and says so in the result's `note`. Only the query text leaves your machine (to the embeddings provider); the synced data is embedded by `embed`, never by a tool call.
 
@@ -161,7 +162,7 @@ The image runs as a non-root user and keeps its database and logs in the `/data`
 
 **Agent** ([`src/agent/agent.ts`](src/agent/agent.ts)) is a minimal tool-use loop on the Anthropic Messages API with a turn cap, output truncation, and tool errors returned to the model rather than thrown. The system prompt and tool definitions are marked as prompt-cache breakpoints (they are identical on every turn), and cache reads/writes are reported alongside token usage.
 
-**Evals** ([`src/evals`](src/evals)) run the real agent against deterministic fixtures in a throwaway in-memory database and score each case on *routing* (right tool called?) and *grounding* (does the answer contain what the tool returned?). Cases include an honest-empty-result check and a **prompt-injection** case: a Notion page title that tries to hijack the agent.
+**Evals** ([`src/evals`](src/evals)) run the real agent against deterministic fixtures in a throwaway in-memory database and score each case on *routing* (right tool called?) and *grounding* (does the answer contain what the tool returned?). Cases include an honest-empty-result check and two **prompt-injection** cases: a Notion page title, and a Notion page body returned in a search snippet, that try to hijack the agent.
 
 Design rationale, the sync algorithm, invariants, failure modes and a guide to adding a source are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -196,7 +197,7 @@ Packages depend only downward; a test ([`architecture.test.ts`](src/architecture
 
 ## Security model
 
-- **Prompt injection.** Synced text (repository names, page titles) is attacker-influenceable and reaches the model. Mitigations: tools are read-only, the system prompt frames tool output as data rather than instructions, and an eval regression-tests it. This reduces the risk; it does not eliminate it.
+- **Prompt injection.** Synced text (repository names, page titles and bodies) is attacker-influenceable and reaches the model. Mitigations: tools are read-only, the system prompt frames tool output as data rather than instructions, and an eval regression-tests it. This reduces the risk; it does not eliminate it.
 - **Credential containment.** Pagination links come from the server. The GitHub adapter refuses to follow one to a different origin, so the bearer token cannot be exfiltrated.
 - **Least privilege.** Read-only credentials; tools cannot write and never call upstream APIs.
 - **Hermetic tests.** Tests run against an in-memory database and never read `.env`, so they cannot touch your data or use your credentials.
@@ -221,12 +222,12 @@ npm run test:coverage  # tests with a coverage report
 
 - **Deletions need a full sync.** Incremental syncs cannot see deletions; run `sync -- --full` (for example nightly) to prune them.
 - **Star counts can lag.** GitHub's `updated_at` may not change when a repository is starred, so an incremental sync can miss pure star changes. Run `sync -- --full` periodically.
-- **Notion search** only returns pages shared with the integration, and its index is eventually consistent. Pages are searchable by title only; page bodies are not synced.
+- **Notion search** only returns pages shared with the integration, and its index is eventually consistent. Page bodies are read as plain text (headings, lists, to-dos, quotes, callouts, code, table rows; up to 3 levels of nesting, 400 blocks and 20,000 characters per page); images, files and embedded databases are not. A body is fetched when a page is (re-)synced, so after upgrading run `sync:notion -- --full` once to backfill existing pages.
 - **SQLite is single-writer.** Fine here (WAL lets the MCP server read during a sync); not a multi-tenant design.
 
 ## Roadmap
 
-OAuth 2.1 for the HTTP transport (per-client identity, revocation, rate limiting) · Notion page bodies, for content-level search · OpenTelemetry metrics alongside traces · eval score history and regression tracking.
+OAuth 2.1 for the HTTP transport (per-client identity, revocation, rate limiting) · OpenTelemetry metrics alongside traces · eval score history and regression tracking.
 
 ## Contributing
 

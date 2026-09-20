@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Bryant Giorgini
 
-import type { SecretName } from '../config/index.js';
+import { loadConfig, type SecretName } from '../config/index.js';
 import type { Document } from '../core/search/indexer.js';
 import { runSync, type SyncOptions, type SyncSummary } from '../core/sync/engine.js';
 import { createGithubAdapter } from './github/adapter.js';
@@ -26,7 +26,11 @@ export const SOURCES = {
   },
   notion: {
     tokenEnv: 'NOTION_TOKEN',
-    sync: (token, options) => runSync(createNotionAdapter(token), options),
+    sync: (token, options) =>
+      runSync(
+        createNotionAdapter(token, undefined, { syncContent: loadConfig().NOTION_SYNC_CONTENT }),
+        options,
+      ),
     documents: listPageDocuments,
   },
 } as const satisfies Record<string, SourceDefinition>;
