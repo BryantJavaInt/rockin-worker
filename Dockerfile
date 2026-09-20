@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build: full toolchain, compiles TypeScript ----
-FROM node:24-slim AS build
+FROM node:25-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -10,7 +10,7 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # ---- runtime: only compiled JS + production dependencies, non-root ----
-FROM node:24-slim AS runtime
+FROM node:25-slim AS runtime
 LABEL org.opencontainers.image.title="rockin-worker" \
       org.opencontainers.image.description="Incremental API-to-SQLite sync worker that serves its data to LLM agents over MCP" \
       org.opencontainers.image.authors="Bryant Giorgini" \
