@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Format based on [Keep a
 ## [Unreleased]
 
 ### Added
+- OpenTelemetry tracing: spans for sync runs and pages, HTTP client calls, tool executions and agent turns (GenAI semantic conventions, including token and cache usage). Exported over OTLP/HTTP only when an endpoint is configured; best-effort, privacy-preserving (no prompt, completion or tool-output content, no query strings), and free when disabled.
 - Remote MCP over streamable HTTP (`serve --http`): stateless, POST-only, bearer-token authentication (constant-time, env-only, fail-closed, 24-character minimum), `Host`/`Origin` validation against DNS rebinding, body-size cap, `/healthz`, graceful shutdown.
 - Semantic search: an `EmbeddingProvider` port with a Voyage AI implementation, float32 vectors stored in SQLite, an incremental indexer (`embed`, `sync --embed`, automatic in worker mode) and hybrid ranking that fuses lexical and semantic results with Reciprocal Rank Fusion. Optional: without a key, index or provider it degrades to lexical ranking with an explanatory note. Tools may now be asynchronous.
 - Ranked full-text search (FTS5, Porter stemming, BM25) over repository name/description/topics and Notion titles, replacing substring matching, with a substring fallback. GitHub sync now also stores description, language, topics and URL.
@@ -16,6 +17,7 @@ All notable changes to this project are documented here. Format based on [Keep a
 - Prompt caching for the agent (system prompt and tool definitions), with cache read/write token accounting.
 
 ### Changed
+- `describeError` moved from `core` to `infra` (it is a generic utility, and `infra` may not depend on `core`).
 - **Breaking:** `github_searchByName` / `notion_searchByName` are now `github_search` / `notion_search`, since they search more than names. Migration v4 rebuilds `notion_pages` with a surrogate integer key.
 - The HTTP client handles GitHub primary rate limits (`403` + `X-RateLimit-Reset`) and gives up on any server-directed wait longer than `maxRetryWaitMs` (default 60 s) instead of blocking. `isRetryable` now receives the whole `Response`.
 

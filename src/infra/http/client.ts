@@ -7,6 +7,8 @@
 // Diagnostics go to stderr: when running as an MCP server, stdout carries the
 // protocol and must never be polluted.
 
+import { markError, SpanKind, traced } from '../telemetry/tracing.js';
+
 export class HttpError extends Error {
   override name = 'HttpError';
 
@@ -54,6 +56,8 @@ export function readRateLimitResetMs(response: Response): number | null {
 }
 
 export type FetchWithRetriesOptions = {
+  /** Called with the attempt number (1-based) before each try; used to record retries on the span. */
+  onAttempt?: (attempt: number) => void;
   headers?: Record<string, string>;
   method?: string;
   body?: string;
@@ -85,7 +89,7 @@ const DEFAULT_MAX_RETRY_WAIT_MS = 60_000;
  * On the last attempt a bad-status response is returned (callers check
  * `response.ok`); a network error is rethrown since there is no response.
  */
-export async function fetchWithRetries(
+async function fetchWithRetriesImpl(
   url: string,
   options: FetchWithRetriesOptions = {},
 ): Promise<Response> {
@@ -100,6 +104,7 @@ export async function fetchWithRetries(
   } = options;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    options.onAttempt?.(attempt);
     const isLastAttempt = attempt === maxAttempts;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -156,6 +161,49 @@ export async function fetchWithRetries(
 
   // Unreachable: every branch above returns or throws by the last attempt.
   throw new Error(`fetchWithRetries: exhausted ${maxAttempts} attempts calling ${url}`);
+}
+
+/** Origin + path only: a query string can carry secrets and must never end up in a trace. */
+function describeTarget(url: string): { full: string; host: string } {
+  try {
+    const target = new URL(url);
+    return { full: `${target.origin}${target.pathname}`, host: target.hostname };
+  } catch {
+    return { full: 'invalid-url', host: 'unknown' };
+  }
+}
+
+/**
+ * Public entry point: the retry logic above, recorded as one client span per logical request
+ * (attempts included), with the final status code and the number of resends.
+ */
+export function fetchWithRetries(
+  url: string,
+  options: FetchWithRetriesOptions = {},
+): Promise<Response> {
+  const method = options.method ?? 'GET';
+  const target = describeTarget(url);
+
+  return traced(
+    `HTTP ${method}`,
+    { 'http.request.method': method, 'url.full': target.full, 'server.address': target.host },
+    async (span) => {
+      let attempts = 0;
+      const response = await fetchWithRetriesImpl(url, {
+        ...options,
+        onAttempt: (attempt) => {
+          attempts = attempt;
+          options.onAttempt?.(attempt);
+        },
+      });
+
+      span.setAttribute('http.response.status_code', response.status);
+      if (attempts > 1) span.setAttribute('http.request.resend_count', attempts - 1);
+      if (response.status >= 400) markError(span, `HTTP ${response.status}`);
+      return response;
+    },
+    { kind: SpanKind.CLIENT },
+  );
 }
 
 /** Turns a non-2xx response into a typed error, keeping a short body excerpt for debugging. */

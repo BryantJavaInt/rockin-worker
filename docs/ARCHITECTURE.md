@@ -24,13 +24,16 @@ flowchart TB
 | `infra/db/` | Connection (WAL), `withTransaction`, versioned migrations (`PRAGMA user_version`). | config |
 | `infra/http/` | The only outbound HTTP path: timeout, retries, `Retry-After`, typed `HttpError`. | config |
 | `infra/logging/` | Append-only JSONL run history. | config |
+| `infra/telemetry/` | OpenTelemetry: the `traced` helper used across the code base, and the optional OTLP exporter. | config |
+| `infra/embeddings/` | The `EmbeddingProvider` port and its Voyage implementation. | config, infra |
+| `infra/errors.ts` | `describeError`: one readable message for any thrown value. | — |
 | `core/sync/` | The `SyncAdapter` port, the sync engine (pagination, watermark, transactions, summary) and per-source sync state. | infra |
 | `core/` | Query helpers shared by every source (`buildResult`, limit clamping, LIKE escaping), error formatting. | infra |
 | `sources/<name>/` | One data source: `adapter` (fetch + validate a page), `store` (persist), `queries` (read-only reads). | core, infra |
 | `sources/index.ts` | Registry of syncable sources — the only file that knows all of them. | sources |
 | `tools/` | `defineTool` framework, the per-source tool definitions the *model* sees, and the registry. | sources, core |
-| `mcp/` | Adapts the registry to MCP. No logic of its own. | tools, config (app identity) |
-| `agent/` | Tool-use loop against the Messages API. Works on whatever tools it is handed. | tools (framework only) |
+| `mcp/` | Adapts the registry to MCP. No logic of its own. | tools, config (app identity), infra (error formatting) |
+| `agent/` | Tool-use loop against the Messages API. Works on whatever tools it is handed. | tools (framework only), config (app identity) |
 | `evals/` | Cases, deterministic fixtures, pure scoring, runner. | agent, tools, sources |
 | `cli/` | Command parsing and exit codes. | everything above |
 
@@ -105,6 +108,8 @@ Migrations are append-only SQL in `infra/db/migrations.ts`; version `n` is store
 **Hybrid search with reciprocal rank fusion.** Lexical BM25 scores and cosine similarities live on unrelated scales, so they are fused by rank (RRF, k = 60) rather than by weighting scores — nothing to calibrate, and an item both rankings like beats one only a single ranking loves. Embeddings sit behind an `EmbeddingProvider` port (Voyage today) and are stored as float32 BLOBs in SQLite, unit-normalized so a dot product is the cosine; at personal scale a brute-force scan over a few thousand vectors takes milliseconds and avoids a vector database. The indexer embeds only new or edited documents (by text hash), keeps each committed batch on failure, and re-embeds everything when the model changes, since vectors from different models are incomparable. Semantic ranking is an enhancement, never a dependency: any failure degrades to the lexical result with an explanatory `note`.
 
 **Remote MCP: stateless streamable HTTP with a bearer token, not OAuth.** The tools are read-only over a local snapshot, so a stateless transport (a fresh server and transport per request) costs nothing and removes session hijacking, cleanup and sticky routing. A single shared bearer token — checked in constant time before the body is read, fail-closed, env-only — is the right size for a personal, single-tenant server. What it does not give is per-client identity, revocation or rate limiting; a multi-user deployment would move to OAuth 2.1 as an MCP resource server, which is the roadmap item. The MCP specification's DNS-rebinding rules are enforced (`Host` on loopback bindings, an `Origin` allow-list).
+
+**OpenTelemetry via the API only, exporter opt-in.** Code is instrumented against `@opentelemetry/api`, which is a no-op until an application registers an SDK — so instrumentation is free by default, and a `traced()` wrapper preserves what it wraps (a synchronous function stays synchronous, a throw stays a throw), so it can never change behaviour. The SDK and OTLP exporter are imported dynamically, only when a collector endpoint is configured, and are given the URL and headers explicitly (left alone, the exporter reads `process.env` and ignores the environment it was handed). Telemetry is best-effort in both directions: a dead collector can neither hang the exit (bounded flush) nor fail the program (caught). Spans follow the GenAI semantic conventions, and prompts, completions and tool output are deliberately not recorded — synced repository and page data must not end up in a tracing backend.
 
 **Structured tool output.** Tools declare an output schema derived from the same Zod types as their queries; the MCP server advertises it and returns `structuredContent` next to the text content (kept for hosts that ignore structured output). A contract test keeps the schema and the real output in agreement.
 

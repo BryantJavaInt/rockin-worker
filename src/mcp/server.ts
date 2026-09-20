@@ -5,7 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { APP } from '../config/meta.js';
-import { describeError } from '../core/errors.js';
+import { describeError } from '../infra/errors.js';
 import type { Tool } from '../tools/define.js';
 import { TOOLS } from '../tools/registry.js';
 

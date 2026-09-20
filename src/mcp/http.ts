@@ -5,7 +5,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { APP } from '../config/meta.js';
-import { describeError } from '../core/errors.js';
+import { describeError } from '../infra/errors.js';
 import type { Tool } from '../tools/define.js';
 import { TOOLS } from '../tools/registry.js';
 import { createMcpServer } from './server.js';

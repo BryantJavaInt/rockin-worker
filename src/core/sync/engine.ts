@@ -3,8 +3,9 @@
 
 import { loadConfig } from '../../config/index.js';
 import { withTransaction } from '../../infra/db/connection.js';
+import { describeError } from '../../infra/errors.js';
 import { logSyncRun, type RunLogEntry } from '../../infra/logging/run-log.js';
-import { describeError } from '../errors.js';
+import { markError, traced } from '../../infra/telemetry/tracing.js';
 import type { Page, SyncAdapter } from './adapter.js';
 import { getSyncState, saveSyncState } from './state.js';
 
@@ -49,7 +50,7 @@ export type SyncOptions = {
 const toNewest = (iso: string | null): Newest | null =>
   iso !== null && !Number.isNaN(Date.parse(iso)) ? { ms: Date.parse(iso), iso } : null;
 
-export async function runSync<T>(
+async function runSyncImpl<T>(
   adapter: SyncAdapter<T>,
   options: SyncOptions = {},
 ): Promise<SyncSummary> {
@@ -94,7 +95,15 @@ export async function runSync<T>(
     let page: Page;
     summary.apiCalls++;
     try {
-      page = await adapter.fetchPage(cursor);
+      page = await traced(
+        'sync.fetch_page',
+        { 'sync.source': adapter.source, 'sync.page': pagesFetched + 1 },
+        async (span) => {
+          const fetched = await adapter.fetchPage(cursor);
+          span.setAttribute('sync.records', fetched.records.length);
+          return fetched;
+        },
+      );
     } catch (err) {
       summary.errors++;
       summary.lastError = describeError(err);
@@ -237,4 +246,36 @@ export async function runSync<T>(
   }
 
   return summary;
+}
+
+/**
+ * Runs one sync pass for a source and records it as a trace: one span for the run (with the
+ * summary as attributes) and one child span per page fetched, under which the HTTP spans nest.
+ */
+export function runSync<T>(
+  adapter: SyncAdapter<T>,
+  options: SyncOptions = {},
+): Promise<SyncSummary> {
+  return traced(
+    `sync ${adapter.source}`,
+    { 'sync.source': adapter.source, 'sync.full': options.full ?? false },
+    async (span) => {
+      const summary = await runSyncImpl(adapter, options);
+
+      span.setAttributes({
+        'sync.fetched': summary.fetched,
+        'sync.inserted': summary.inserted,
+        'sync.updated': summary.updated,
+        'sync.deleted': summary.deleted,
+        'sync.skipped': summary.skipped,
+        'sync.errors': summary.errors,
+        'sync.api_calls': summary.apiCalls,
+        'sync.capped': summary.capped,
+        'sync.resumed': summary.resumed,
+      });
+      // An error the engine handled (and reported in the summary) is still a failed run.
+      if (summary.errors > 0) markError(span, summary.lastError ?? 'sync finished with errors');
+      return summary;
+    },
+  );
 }

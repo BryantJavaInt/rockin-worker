@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Bryant Giorgini
 
 import { z } from 'zod';
+import { traced } from '../infra/telemetry/tracing.js';
 
 /**
  * A Tool is defined exactly once. The MCP server, the agent loop and the evals
@@ -35,7 +36,18 @@ export function defineTool<S extends z.ZodObject>(def: {
     description: def.description,
     input: def.input,
     output: def.output,
-    execute: (args) => def.run(def.input.parse(args ?? {})),
+    // One span per tool call, whichever consumer (agent, MCP, CLI) makes it. Validation runs
+    // inside the span so a model's bad arguments show up as a failed tool call.
+    execute: (args) =>
+      traced(
+        `execute_tool ${def.name}`,
+        {
+          'gen_ai.operation.name': 'execute_tool',
+          'gen_ai.tool.name': def.name,
+          'gen_ai.tool.type': 'function',
+        },
+        () => def.run(def.input.parse(args ?? {})),
+      ),
   };
 }
 

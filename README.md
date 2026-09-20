@@ -25,7 +25,7 @@ flowchart LR
   end
   GH & NO -->|adapters: fetch + validate| E --> DB
   DB --> R
-  R --> M[MCP server<br/>stdio]
+  R --> M[MCP server<br/>stdio · HTTP]
   R --> A[Agent loop<br/>Anthropic Messages API]
   R --> EV[Evals]
   M --> CD[Claude Desktop / MCP hosts]
@@ -165,13 +165,28 @@ The image runs as a non-root user and keeps its database and logs in the `/data`
 
 Design rationale, the sync algorithm, invariants, failure modes and a guide to adding a source are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Observability
+
+Sync runs, HTTP calls, tool calls and agent turns are instrumented with OpenTelemetry. Nothing is exported unless you point it at a collector, using the standard variables:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318      # any OTLP/HTTP collector: Jaeger, Tempo, Honeycomb, …
+export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=…"               # optional, e.g. a SaaS backend's key
+export OTEL_SERVICE_NAME=rockin-worker                        # optional
+npm run sync
+```
+
+A sync produces a `sync <source>` span (the run summary — fetched, inserted, deleted, errors, capped, resumed — as attributes) with one `sync.fetch_page` child per page and the `HTTP` client span under it. The agent produces `invoke_agent` → `chat <model>` (per model call) and `execute_tool <name>`, following the [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/): model, finish reason, and input/output/cache token usage.
+
+**Privacy by design.** Prompts, answers and tool output are never recorded (the GenAI conventions make content opt-in), URLs are recorded without their query string, and credentials never appear — a test asserts all three. Traces are best-effort: an unreachable collector cannot hang or fail the program, and `OTEL_SDK_DISABLED=true` turns everything off.
+
 ## Project layout
 
 ```
 src/
   config/     validated environment
-  infra/      db (WAL, migrations) · http (retries) · logging
-  core/       sync engine + SyncAdapter port, sync state, query helpers
+  infra/      db (WAL, migrations) · http (retries) · logging · telemetry (OpenTelemetry) · embeddings
+  core/       sync engine + SyncAdapter port, sync state, query helpers, hybrid search + indexer
   sources/    github/ · notion/  (adapter, store, queries)
   tools/      tool framework, per-source tool definitions, registry
   mcp/  agent/  evals/  cli/  main.ts
@@ -206,12 +221,12 @@ npm run test:coverage  # tests with a coverage report
 
 - **Deletions need a full sync.** Incremental syncs cannot see deletions; run `sync -- --full` (for example nightly) to prune them.
 - **Star counts can lag.** GitHub's `updated_at` may not change when a repository is starred, so an incremental sync can miss pure star changes. Run `sync -- --full` periodically.
-- **Notion search** only returns pages shared with the integration, and its index is eventually consistent.
+- **Notion search** only returns pages shared with the integration, and its index is eventually consistent. Pages are searchable by title only; page bodies are not synced.
 - **SQLite is single-writer.** Fine here (WAL lets the MCP server read during a sync); not a multi-tenant design.
 
 ## Roadmap
 
-Ranked full-text and semantic search over synced items · streamable-HTTP MCP transport with authentication · OpenTelemetry traces for sync runs and agent turns · eval score history and regression tracking.
+OAuth 2.1 for the HTTP transport (per-client identity, revocation, rate limiting) · Notion page bodies, for content-level search · OpenTelemetry metrics alongside traces · eval score history and regression tracking.
 
 ## Contributing
 

@@ -2,8 +2,10 @@
 // Copyright (c) 2026 Bryant Giorgini
 
 import { z } from 'zod';
-import { describeError } from '../core/errors.js';
+import { APP } from '../config/meta.js';
+import { describeError } from '../infra/errors.js';
 import { ensureOk, fetchWithRetries } from '../infra/http/client.js';
+import { SpanKind, traced } from '../infra/telemetry/tracing.js';
 import { type Tool, toInputJsonSchema } from '../tools/define.js';
 
 export const SYSTEM_PROMPT = [
@@ -18,6 +20,7 @@ export const SYSTEM_PROMPT = [
 ].join('\n');
 
 const MAX_TOOL_OUTPUT_CHARS = 20_000;
+const APP_NAME = APP.name;
 
 const ResponseSchema = z.object({
   content: z.array(z.unknown()),
@@ -120,7 +123,7 @@ async function executeToolUse(
  * ask → (model requests tools → we run them → feed results back) → final answer.
  * Tools run in-process from the same registry the MCP server exposes.
  */
-export async function runAgent(question: string, options: AgentOptions): Promise<AgentResult> {
+async function runAgentImpl(question: string, options: AgentOptions): Promise<AgentResult> {
   const {
     apiKey,
     model,
@@ -167,27 +170,51 @@ export async function runAgent(question: string, options: AgentOptions): Promise
   });
 
   for (let turn = 1; turn <= maxTurns; turn++) {
-    const response = await ensureOk(
-      await fetchWithRetries(`${baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: maxTokens,
-          system,
-          tools: toolDefs,
-          messages,
-          ...(temperature !== undefined ? { temperature } : {}),
-        }),
-      }),
-      'Anthropic API',
-    );
+    // One "chat" span per model call, following the OpenTelemetry GenAI conventions. Prompts and
+    // completions are deliberately NOT recorded: that content is opt-in in the spec, and it
+    // would put private repository and page data into your tracing backend.
+    const parsed = await traced(
+      `chat ${model}`,
+      {
+        'gen_ai.operation.name': 'chat',
+        'gen_ai.provider.name': 'anthropic',
+        'gen_ai.request.model': model,
+        'gen_ai.request.max_tokens': maxTokens,
+        ...(temperature !== undefined ? { 'gen_ai.request.temperature': temperature } : {}),
+      },
+      async (span) => {
+        const response = await ensureOk(
+          await fetchWithRetries(`${baseUrl}/v1/messages`, {
+            method: 'POST',
+            headers: {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: maxTokens,
+              system,
+              tools: toolDefs,
+              messages,
+              ...(temperature !== undefined ? { temperature } : {}),
+            }),
+          }),
+          'Anthropic API',
+        );
 
-    const parsed = ResponseSchema.parse(await response.json());
+        const body = ResponseSchema.parse(await response.json());
+        span.setAttributes({
+          'gen_ai.response.finish_reasons': body.stop_reason ? [body.stop_reason] : [],
+          'gen_ai.usage.input_tokens': body.usage.input_tokens,
+          'gen_ai.usage.output_tokens': body.usage.output_tokens,
+          'gen_ai.usage.cache_read.input_tokens': body.usage.cache_read_input_tokens ?? 0,
+          'gen_ai.usage.cache_creation.input_tokens': body.usage.cache_creation_input_tokens ?? 0,
+        });
+        return body;
+      },
+      { kind: SpanKind.CLIENT },
+    );
     usage.inputTokens += parsed.usage.input_tokens;
     usage.outputTokens += parsed.usage.output_tokens;
     usage.cacheReadTokens += parsed.usage.cache_read_input_tokens ?? 0;
@@ -216,4 +243,35 @@ export async function runAgent(question: string, options: AgentOptions): Promise
   }
 
   return finish('', maxTurns, 'max_turns');
+}
+
+/**
+ * Runs the agent and records it as an "invoke_agent" span (OpenTelemetry GenAI conventions), the
+ * parent of one "chat" span per model call and one "execute_tool" span per tool call.
+ */
+export function runAgent(question: string, options: AgentOptions): Promise<AgentResult> {
+  return traced(
+    `invoke_agent ${APP_NAME}`,
+    {
+      'gen_ai.operation.name': 'invoke_agent',
+      'gen_ai.provider.name': 'anthropic',
+      'gen_ai.agent.name': APP_NAME,
+      'gen_ai.request.model': options.model,
+    },
+    async (span) => {
+      const result = await runAgentImpl(question, options);
+
+      span.setAttributes({
+        'gen_ai.usage.input_tokens': result.usage.inputTokens,
+        'gen_ai.usage.output_tokens': result.usage.outputTokens,
+        'gen_ai.usage.cache_read.input_tokens': result.usage.cacheReadTokens,
+        'gen_ai.usage.cache_creation.input_tokens': result.usage.cacheCreationTokens,
+        'agent.turns': result.turns,
+        'agent.tool_calls': result.toolCalls.length,
+        'agent.stop_reason': result.stopReason,
+      });
+      return result;
+    },
+    { kind: SpanKind.CLIENT },
+  );
 }
