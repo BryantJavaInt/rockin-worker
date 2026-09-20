@@ -79,7 +79,7 @@ All configuration is environment variables, read from the process environment fi
 | Command | What it does |
 | --- | --- |
 | `npm run sync` · `sync:github` · `sync:notion` | Sync all configured sources, or one. Append `-- --full` to ignore the watermark, re-sync everything and prune records deleted upstream, or `-- --every 15m` to keep running as a worker (stops gracefully on Ctrl+C / SIGTERM). Exits 1 if any source errored. |
-| `npm run embed [-- github|notion]` | Build or refresh the semantic-search index (needs `VOYAGE_API_KEY`). Incremental: only new or edited items are embedded. `sync --embed` does it right after a sync, and a worker does it every cycle once a key is set. |
+| `npm run embed [-- github\|notion]` | Build or refresh the semantic-search index (needs `VOYAGE_API_KEY`). Incremental: only new or edited items are embedded. `sync --embed` does it right after a sync, and a worker does it every cycle once a key is set. |
 | `npm run tool -- <name> [--flag value]` | Run one tool locally and print its JSON. Without a name it lists the available tools. |
 | `npm run ask -- "<question>"` | Ask the Claude agent (tools run in-process). Tools used, tokens and latency go to stderr. |
 | `npm run serve` | MCP server over stdio. Add `-- --http [--host h] [--port p]` for remote HTTP with bearer authentication. |
