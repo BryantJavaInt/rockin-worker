@@ -64,6 +64,8 @@ for page in pages(maxPages):
     merge page counters into the summary   # only after COMMIT
     stop if: hit watermark | no next cursor | error
 capped = ran out of pages before either stop condition
+if full and complete (no error, not capped) and something was seen:
+    adapter.prune(seen keys)             # delete what upstream no longer has
 if no errors:
     watermark = capped ? unchanged : newest modifiedAt seen
     lastSuccessAt = now
@@ -76,6 +78,7 @@ Invariants:
 2. **`<` not `<=` at the cutoff.** Equal timestamps are re-processed. Notion rounds `last_edited_time` to the minute; `<=` would drop an edit made in the same minute as the previous sync. Idempotent upserts make the overlap free.
 3. **A summary never claims rows that were rolled back.** Page-local counters merge after COMMIT.
 4. **A logging failure never fails a sync that worked.**
+5. **Only a complete full sync may delete.** "Not seen" means "deleted upstream" only if every upstream record was seen. An incremental, capped or failed run never prunes, and an empty upstream response is refused outright.
 
 ## Data model
 
@@ -95,6 +98,10 @@ Migrations are append-only SQL in `infra/db/migrations.ts`; version `n` is store
 
 **Strict at the boundary, tolerant inside.** External and LLM-produced data is validated (Zod) at the edge. One bad record is skipped and counted; a wrong response *envelope* aborts, because that means the integration itself is broken.
 
+**Structured tool output.** Tools declare an output schema derived from the same Zod types as their queries; the MCP server advertises it and returns `structuredContent` next to the text content (kept for hosts that ignore structured output). A contract test keeps the schema and the real output in agreement.
+
+**Prompt caching in the agent.** The system prompt and tool definitions are identical on every turn, so they are marked as cache breakpoints. This is a cost/latency optimization only — prompts below the minimum cacheable length are not cached and nothing fails.
+
 **Evals are a manual gate.** They cost money and are nondeterministic, so they don't run in CI. Their scoring logic is pure and unit-tested, and a test asserts every eval expectation is actually producible from the fixtures, so a broken eval fails fast without a model call.
 
 **Biome over ESLint + Prettier.** One tool, one config, no dependency on the TypeScript compiler API (the project is on the native TS 7 compiler).
@@ -106,6 +113,8 @@ Migrations are append-only SQL in `infra/db/migrations.ts`; version `n` is store
 | Failure | Behaviour |
 | --- | --- |
 | Upstream 429 / 5xx | Retry, honoring `Retry-After`; then a counted error, watermark untouched. |
+| GitHub primary rate limit (403 + `X-RateLimit-Remaining: 0`) | Wait for `X-RateLimit-Reset`, up to 60 s; longer waits fail fast with a counted error. |
+| Sync cycle fails in worker mode | Logged; the worker continues with the next interval. |
 | Upstream 401 / 404 | Not retried; counted error, exit code 1. |
 | Network error / timeout | Retried with backoff + jitter; rethrown once exhausted. |
 | Malformed record | Skipped and counted; run continues. |

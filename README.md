@@ -71,7 +71,7 @@ All configuration is environment variables, read from the process environment fi
 
 | Command | What it does |
 | --- | --- |
-| `npm run sync` · `sync:github` · `sync:notion` | Sync all configured sources, or one. Append `-- --full` to ignore the watermark and re-sync everything. Exits 1 if any source errored. |
+| `npm run sync` · `sync:github` · `sync:notion` | Sync all configured sources, or one. Append `-- --full` to ignore the watermark, re-sync everything and prune records deleted upstream, or `-- --every 15m` to keep running as a worker (stops gracefully on Ctrl+C / SIGTERM). Exits 1 if any source errored. |
 | `npm run tool -- <name> [--flag value]` | Run one tool locally and print its JSON. Without a name it lists the available tools. |
 | `npm run ask -- "<question>"` | Ask the Claude agent (tools run in-process). Tools used, tokens and latency go to stderr. |
 | `npm run serve` | MCP server over stdio. |
@@ -108,6 +108,7 @@ Run `npm run sync` first — the server only serves what has been synced.
 docker build -t rockin-worker .
 docker run --rm --env-file .env -v rockin-data:/data rockin-worker sync all
 docker run -i --rm -v rockin-data:/data rockin-worker serve      # -i keeps stdin open for stdio
+docker run -d --restart unless-stopped --env-file .env -v rockin-data:/data rockin-worker sync all --every 15m   # worker
 ```
 
 The image runs as a non-root user and keeps its database and logs in the `/data` volume.
@@ -121,12 +122,14 @@ The image runs as a non-root user and keeps its database and logs in the `/data`
 - **No silent data loss.** A `capped` or failed run never advances the watermark — doing so would skip the older, unseen records forever.
 - **Transactional pages.** Each page commits or rolls back as a unit; the summary counts only committed rows.
 - **Validated input.** Every upstream record is parsed with Zod. One malformed record is skipped and counted; an unexpected response envelope aborts the run.
-- **Resilient HTTP.** Per-attempt timeouts; retries on 429/5xx/network errors, honoring `Retry-After` (seconds or HTTP-date) with backoff + jitter otherwise.
+- **Resilient HTTP.** Per-attempt timeouts; retries on 429/5xx/network errors with backoff + jitter, honoring `Retry-After` (seconds or HTTP-date) and GitHub's primary rate limit (`403` + `X-RateLimit-Reset`). A server-directed wait longer than 60 s makes the run fail fast instead of hanging.
+- **Deletions.** `--full` prunes records the upstream no longer has — only after a complete, error-free, uncapped run, and never when upstream returned nothing (that points to a token-scope or outage problem, not an empty account).
+- **Worker mode.** `--every` runs non-overlapping cycles with jitter; a failing cycle is logged and the worker carries on. SIGINT/SIGTERM let the cycle in flight finish, close the MCP transport and the database, then exit.
 - **Observable.** Every run appends one structured line to `logs/sync-history.jsonl`.
 
-**Tools** are defined once ([`src/tools/define.ts`](src/tools/define.ts), one file per source in [`src/tools/`](src/tools)) and consumed by the MCP server, the agent and the evals, so the name, description and schema the model sees cannot drift between them. Model-produced arguments are validated before execution, and MCP tools are annotated `readOnlyHint` so hosts can safely auto-approve them.
+**Tools** are defined once ([`src/tools/define.ts`](src/tools/define.ts), one file per source in [`src/tools/`](src/tools)) and consumed by the MCP server, the agent and the evals, so the name, description and schema the model sees cannot drift between them. Model-produced arguments are validated before execution, and MCP tools are annotated `readOnlyHint` so hosts can safely auto-approve them. Each tool also declares an output schema derived from the same Zod types as its query, and the MCP server returns typed `structuredContent` (plus the text fallback); a contract test parses every tool's real output against its schema.
 
-**Agent** ([`src/agent/agent.ts`](src/agent/agent.ts)) is a minimal tool-use loop on the Anthropic Messages API with a turn cap, output truncation, and tool errors returned to the model rather than thrown.
+**Agent** ([`src/agent/agent.ts`](src/agent/agent.ts)) is a minimal tool-use loop on the Anthropic Messages API with a turn cap, output truncation, and tool errors returned to the model rather than thrown. The system prompt and tool definitions are marked as prompt-cache breakpoints (they are identical on every turn), and cache reads/writes are reported alongside token usage.
 
 **Evals** ([`src/evals`](src/evals)) run the real agent against deterministic fixtures in a throwaway in-memory database and score each case on *routing* (right tool called?) and *grounding* (does the answer contain what the tool returned?). Cases include an honest-empty-result check and a **prompt-injection** case: a Notion page title that tries to hijack the agent.
 
@@ -171,7 +174,7 @@ npm run test:coverage  # tests with a coverage report
 
 ## Known limitations
 
-- **Upstream deletions are not propagated.** Records deleted upstream stay in the store until a tombstone/reconcile pass exists.
+- **Deletions need a full sync.** Incremental syncs cannot see deletions; run `sync -- --full` (for example nightly) to prune them.
 - **Star counts can lag.** GitHub's `updated_at` may not change when a repository is starred, so an incremental sync can miss pure star changes. Run `sync -- --full` periodically.
 - **Notion search** only returns pages shared with the integration, and its index is eventually consistent.
 - **SQLite is single-writer.** Fine here (WAL lets the MCP server read during a sync); not a multi-tenant design.
@@ -179,7 +182,7 @@ npm run test:coverage  # tests with a coverage report
 
 ## Roadmap
 
-Resumable backfill cursor · tombstones for upstream deletions · streamable-HTTP MCP transport · eval score history and regression tracking.
+Resumable backfill cursor · ranked full-text and semantic search over synced items · streamable-HTTP MCP transport with authentication · OpenTelemetry traces for sync runs and agent turns · eval score history and regression tracking.
 
 ## Contributing
 

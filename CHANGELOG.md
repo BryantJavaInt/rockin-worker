@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `sync --full` prunes records deleted upstream (optional `keyOf`/`prune` on `SyncAdapter`), only after a complete, error-free, uncapped run and never on an empty upstream response.
+- Worker mode: `sync --every 15m` with jitter and non-overlapping cycles; failing cycles are logged and do not stop the worker. `core/duration` and `core/sync/watch` are new pure, tested modules.
+- Graceful shutdown: SIGINT/SIGTERM finish the current cycle and close the MCP transport and database.
+- MCP tools declare an output schema and return typed `structuredContent` alongside the text content; a contract test checks every tool.
+- Prompt caching for the agent (system prompt and tool definitions), with cache read/write token accounting.
+
+### Changed
+- The HTTP client handles GitHub primary rate limits (`403` + `X-RateLimit-Reset`) and gives up on any server-directed wait longer than `maxRetryWaitMs` (default 60 s) instead of blocking. `isRetryable` now receives the whole `Response`.
+
 ## [2.0.0] — 2026-09-20
 
 ### Added
