@@ -1,18 +1,30 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Bryant Giorgini
 
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { APP } from '../config/meta.js';
 import { describeError } from '../infra/errors.js';
+import { recordMcpRequest } from '../infra/telemetry/metrics.js';
 import type { Tool } from '../tools/define.js';
 import { TOOLS } from '../tools/registry.js';
+import { createOAuthAuthenticator, type OAuthOptions } from './auth/oauth.js';
+import { createRateLimiter } from './auth/rate-limit.js';
+import { isRevoked } from './auth/revocations.js';
+import { createStaticAuthenticator } from './auth/static.js';
+import { AuthError, type Authenticator, type Principal } from './auth/types.js';
 import { createMcpServer } from './server.js';
 
 export type McpHttpOptions = {
-  /** Shared secret clients must present as `Authorization: Bearer <token>`. */
-  token: string;
+  /**
+   * Shared secret clients must present as `Authorization: Bearer <token>`. Exactly one of `token`
+   * and `oauth` must be given.
+   */
+  token?: string;
+  /** Validate OAuth 2.1 access tokens from an external authorization server instead. */
+  oauth?: OAuthOptions;
+  /** Requests each client may make per minute; 0 turns the limit off. Default 120. */
+  rateLimitPerMinute?: number;
   host?: string;
   port?: number;
   /** Browser origins allowed to call the server. Non-browser clients send no Origin and are unaffected. */
@@ -23,19 +35,10 @@ export type McpHttpOptions = {
 
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 const DEFAULT_MAX_BODY_BYTES = 1_048_576; // 1 MiB: MCP requests are small JSON-RPC messages
+const DEFAULT_RATE_LIMIT_PER_MINUTE = 120;
 
 export const isLoopback = (host: string) =>
   host === 'localhost' || host === '::1' || host.startsWith('127.');
-
-/**
- * Compares tokens in constant time. Hashing both sides first gives equal-length inputs (which
- * timingSafeEqual requires) and keeps the token's length from leaking through timing.
- */
-export function tokensMatch(provided: string | undefined, expected: string): boolean {
-  if (!provided) return false;
-  const digest = (value: string) => createHash('sha256').update(value).digest();
-  return timingSafeEqual(digest(provided), digest(expected));
-}
 
 function sendJson(
   res: ServerResponse,
@@ -80,13 +83,29 @@ function readBody(req: IncomingMessage, limit: number): Promise<string> {
 }
 
 /**
+ * Picks how callers authenticate. Exactly one mode: two would leave it unclear which credential
+ * a client is held to, and a misconfiguration must fail at start-up, not at the first request.
+ */
+function chooseAuthenticator(options: McpHttpOptions): Authenticator {
+  if (options.token && options.oauth) {
+    throw new Error('Configure either a shared token or OAuth for the MCP server, not both.');
+  }
+  if (options.oauth) return createOAuthAuthenticator(options.oauth);
+  if (options.token) return createStaticAuthenticator(options.token);
+  throw new Error('The MCP HTTP server needs a shared token or an OAuth configuration.');
+}
+
+/**
  * MCP over streamable HTTP, for clients that are not on the same machine.
  *
  * Security posture, in the order requests are checked:
  * 1. `Host` must be a loopback name when bound to loopback, and `Origin` (if sent) must be
  *    allow-listed — the MCP spec's defence against DNS-rebinding attacks from a web page.
- * 2. Bearer token, compared in constant time, *before* the body is read.
- * 3. POST only, JSON body capped in size.
+ * 2. The bearer credential, *before* the body is read: either the shared token (constant-time
+ *    comparison) or an OAuth 2.1 access token (signature, expiry, issuer, audience, scope), then
+ *    the revocation list.
+ * 3. A per-client rate limit.
+ * 4. POST only, JSON body capped in size.
  *
  * It is stateless: every request gets its own server and transport, so there are no sessions
  * to hijack, nothing to clean up, and it scales horizontally. The tools are read-only, so
@@ -95,38 +114,83 @@ function readBody(req: IncomingMessage, limit: number): Promise<string> {
  */
 export function createMcpHttpServer(options: McpHttpOptions) {
   const {
-    token,
     host = '127.0.0.1',
     port = 8787,
     allowedOrigins = [],
     tools = TOOLS,
     maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
+    rateLimitPerMinute = DEFAULT_RATE_LIMIT_PER_MINUTE,
   } = options;
+
+  const auth = chooseAuthenticator(options);
+  const limiter =
+    rateLimitPerMinute > 0
+      ? createRateLimiter({ limit: rateLimitPerMinute, windowMs: 60_000 })
+      : null;
+
+  /** Answers a refusal and records why, so the two can never drift apart. */
+  function refuse(
+    res: ServerResponse,
+    outcome: string,
+    status: number,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ): void {
+    recordMcpRequest(outcome);
+    sendJson(res, status, body, headers);
+  }
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (isLoopback(host)) {
       const requestHost = (req.headers.host ?? '').replace(/:\d+$/, '');
       if (!LOOPBACK_HOSTS.includes(requestHost)) {
-        return sendJson(res, 403, rpcError(-32000, 'Forbidden: unexpected Host header.'));
+        return refuse(res, 'bad_host', 403, rpcError(-32000, 'Forbidden: unexpected Host header.'));
       }
     }
 
     const origin = req.headers.origin;
     if (origin !== undefined && !allowedOrigins.includes(origin)) {
-      return sendJson(res, 403, rpcError(-32000, 'Forbidden: origin not allowed.'));
+      return refuse(res, 'bad_origin', 403, rpcError(-32000, 'Forbidden: origin not allowed.'));
     }
 
     const bearer = /^Bearer (.+)$/i.exec(req.headers.authorization ?? '')?.[1];
-    if (!tokensMatch(bearer, token)) {
-      return sendJson(res, 401, rpcError(-32001, 'Unauthorized.'), {
-        'WWW-Authenticate': 'Bearer realm="mcp"',
-      });
+    let principal: Principal;
+    try {
+      principal = await auth.authenticate(bearer);
+      if (principal.kind === 'oauth' && isRevoked(principal)) {
+        throw new AuthError('invalid_token', 401, 'The access token has been revoked.', 'revoked');
+      }
+    } catch (err) {
+      if (!(err instanceof AuthError)) throw err;
+      const headers: Record<string, string> = {
+        // No credential at all gets a bare challenge; a rejected one says why (RFC 6750 §3.1).
+        'WWW-Authenticate': auth.challenge(bearer ? err : undefined),
+        ...(err.status === 503 ? { 'Retry-After': '30' } : {}),
+      };
+      return refuse(res, err.outcome, err.status, rpcError(-32001, err.message), headers);
+    }
+
+    if (limiter) {
+      const decision = limiter.hit(`${principal.kind}:${principal.id}`);
+      // Advertised on every answer so a well-behaved client can pace itself (IETF RateLimit headers).
+      res.setHeader('RateLimit-Limit', String(decision.limit));
+      res.setHeader('RateLimit-Remaining', String(decision.remaining));
+      res.setHeader('RateLimit-Reset', String(decision.resetSeconds));
+      if (!decision.allowed) {
+        return refuse(res, 'rate_limited', 429, rpcError(-32002, 'Too many requests.'), {
+          'Retry-After': String(decision.resetSeconds),
+        });
+      }
     }
 
     if (req.method !== 'POST') {
-      return sendJson(res, 405, rpcError(-32000, 'Method not allowed: use POST.'), {
-        Allow: 'POST',
-      });
+      return refuse(
+        res,
+        'method_not_allowed',
+        405,
+        rpcError(-32000, 'Method not allowed: use POST.'),
+        { Allow: 'POST' },
+      );
     }
 
     let body: unknown;
@@ -134,13 +198,14 @@ export function createMcpHttpServer(options: McpHttpOptions) {
       body = JSON.parse(await readBody(req, maxBodyBytes));
     } catch (err) {
       if (err instanceof BodyTooLarge) {
-        return sendJson(res, 413, rpcError(-32000, 'Request body too large.'), {
+        return refuse(res, 'too_large', 413, rpcError(-32000, 'Request body too large.'), {
           Connection: 'close',
         });
       }
-      return sendJson(res, 400, rpcError(-32700, 'Parse error: body is not valid JSON.'));
+      return refuse(res, 'bad_json', 400, rpcError(-32700, 'Parse error: body is not valid JSON.'));
     }
 
+    recordMcpRequest('ok');
     const server = createMcpServer(tools);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
@@ -162,6 +227,13 @@ export function createMcpHttpServer(options: McpHttpOptions) {
       // Liveness probe: unauthenticated and reveals nothing beyond what --version prints.
       if (pathname === '/healthz' && req.method === 'GET') {
         return sendJson(res, 200, { status: 'ok', name: APP.name, version: APP.version });
+      }
+      // RFC 9728: how a client learns which authorization server protects this resource. It must
+      // be public — the client has no token yet, that is the point of asking.
+      if (auth.metadata?.paths.includes(pathname) && req.method === 'GET') {
+        return sendJson(res, 200, auth.metadata.document, {
+          'Cache-Control': 'public, max-age=300',
+        });
       }
       if (pathname !== '/mcp') return sendJson(res, 404, rpcError(-32000, 'Not found.'));
       return handleMcp(req, res);
@@ -202,7 +274,11 @@ export async function serveHttp(options: McpHttpOptions, signal?: AbortSignal): 
   const http = createMcpHttpServer(options);
   const { host, port } = await http.listen();
 
-  console.error(`MCP server listening on http://${host}:${port}/mcp (Ctrl+C stops it).`);
+  console.error(
+    `MCP server listening on http://${host}:${port}/mcp (Ctrl+C stops it). Authentication: ${
+      options.oauth ? `OAuth 2.1 access tokens from ${options.oauth.issuer}` : 'shared bearer token'
+    }.`,
+  );
   if (!isLoopback(host)) {
     console.error(
       'Warning: bound to a non-loopback address. Bearer tokens over plain HTTP are readable on the ' +

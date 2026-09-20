@@ -25,6 +25,14 @@ const EnvSchema = z.object({
   MCP_HTTP_HOST: z.string().default('127.0.0.1'),
   MCP_HTTP_PORT: z.coerce.number().int().min(0).max(65535).default(8787),
   MCP_ALLOWED_ORIGINS: z.string().optional(),
+  // OAuth 2.1 for the remote MCP server, as an alternative to the shared token: tokens are issued
+  // by an external authorization server and only validated here. Issuer and audience go together.
+  MCP_OAUTH_ISSUER: z.url().optional(),
+  MCP_OAUTH_AUDIENCE: z.url().optional(),
+  MCP_OAUTH_JWKS_URI: z.url().optional(),
+  MCP_OAUTH_SCOPE: z.string().default('mcp:read'),
+  // Requests per client per minute on the remote MCP endpoint; 0 turns the limit off.
+  MCP_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(0).default(120),
   EMBEDDING_MODEL: z.string().default('voyage-3.5-lite'),
   // Cosine-similarity floor for semantic matches. Scales differ per model: calibrate it.
   SEMANTIC_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.25),

@@ -10,11 +10,14 @@ import { indexDocuments } from '../core/search/indexer.js';
 import { runEvery } from '../core/sync/watch.js';
 import { getEmbeddingProvider } from '../infra/embeddings/provider.js';
 import { describeError } from '../infra/errors.js';
+import { oauthOptionsFrom } from '../mcp/auth/options.js';
 import { serveHttp } from '../mcp/http.js';
 import { serveStdio } from '../mcp/server.js';
 import { SOURCE_NAMES, SOURCES, type SourceName } from '../sources/index.js';
 import { type Tool, toInputJsonSchema } from '../tools/define.js';
 import { findTool, TOOLS } from '../tools/registry.js';
+import { authCommand } from './auth.js';
+import { UsageError } from './errors.js';
 
 const USAGE = `rockin-worker — sync data sources into SQLite and serve them to LLM agents
 
@@ -28,7 +31,10 @@ Usage:
   rockin-worker ask "<question>" [--model <id>]     Ask the Claude agent, backed by the tools
   rockin-worker tool <name> [--flag value | json]   Run one tool locally and print its JSON
   rockin-worker serve [--http] [--host h] [--port p] Start the MCP server: stdio by default, or HTTP
-                                                    (needs MCP_AUTH_TOKEN; binds to 127.0.0.1 unless told otherwise)
+                                                    (needs MCP_AUTH_TOKEN or the MCP_OAUTH_* variables;
+                                                    binds to 127.0.0.1 unless told otherwise)
+  rockin-worker auth revoke|unrevoke --client <id> | --subject <id> | --token <jti> [--reason <text>]
+  rockin-worker auth list                           Manage OAuth credentials the HTTP server refuses
   rockin-worker version                             Show version, author and license
   rockin-worker help
 
@@ -36,10 +42,6 @@ Tools: ${TOOLS.map((t) => t.name).join(', ')}
 Exit codes: 0 ok · 1 runtime failure · 2 usage error
 
 © ${APP.author} · ${APP.license} License · ${APP.homepage}`;
-
-class UsageError extends Error {
-  override name = 'UsageError';
-}
 
 const isSourceName = (value: string): value is SourceName =>
   (SOURCE_NAMES as string[]).includes(value);
@@ -183,11 +185,21 @@ async function serveCommand(args: string[], signal?: AbortSignal): Promise<numbe
   }
 
   const config = loadConfig();
-  const token = requireSecret(config, 'MCP_AUTH_TOKEN');
-  if (token.length < MIN_TOKEN_LENGTH) {
+  const oauth = oauthOptionsFrom(config);
+  if (oauth && config.MCP_AUTH_TOKEN) {
     throw new ConfigError(
-      `MCP_AUTH_TOKEN must be at least ${MIN_TOKEN_LENGTH} characters. Generate one with: openssl rand -hex 32`,
+      'Set either MCP_AUTH_TOKEN (shared token) or the MCP_OAUTH_* variables (OAuth 2.1), not both.',
     );
+  }
+
+  let token: string | undefined;
+  if (!oauth) {
+    token = requireSecret(config, 'MCP_AUTH_TOKEN');
+    if (token.length < MIN_TOKEN_LENGTH) {
+      throw new ConfigError(
+        `MCP_AUTH_TOKEN must be at least ${MIN_TOKEN_LENGTH} characters. Generate one with: openssl rand -hex 32`,
+      );
+    }
   }
 
   const port = values.port === undefined ? config.MCP_HTTP_PORT : Number(values.port);
@@ -197,7 +209,8 @@ async function serveCommand(args: string[], signal?: AbortSignal): Promise<numbe
 
   await serveHttp(
     {
-      token,
+      ...(oauth ? { oauth } : { token }),
+      rateLimitPerMinute: config.MCP_RATE_LIMIT_PER_MINUTE,
       host: values.host ?? config.MCP_HTTP_HOST,
       port,
       allowedOrigins: (config.MCP_ALLOWED_ORIGINS ?? '')
@@ -330,6 +343,8 @@ export async function run(argv: string[], deps: { signal?: AbortSignal } = {}): 
         return await toolCommand(rest);
       case 'serve':
         return await serveCommand(rest, deps.signal);
+      case 'auth':
+        return authCommand(rest);
       case 'version':
       case '--version':
       case '-v':

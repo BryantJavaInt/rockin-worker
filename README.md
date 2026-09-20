@@ -66,7 +66,11 @@ All configuration is environment variables, read from the process environment fi
 | `VOYAGE_API_KEY` | — | Enables semantic search (embeddings come from Voyage AI; Anthropic has no embeddings API). |
 | `EMBEDDING_MODEL` | `voyage-3.5-lite` | Embedding model. Changing it re-embeds everything on the next `embed`. |
 | `SEMANTIC_MIN_SCORE` | `0.25` | Cosine-similarity floor for semantic matches. Scales differ per model — calibrate it. |
-| `MCP_AUTH_TOKEN` | — | Bearer token for `serve --http` (at least 24 characters). Environment only, never a flag. |
+| `MCP_AUTH_TOKEN` | — | Shared bearer token for `serve --http` (at least 24 characters). Environment only, never a flag. Use this **or** OAuth, not both. |
+| `MCP_OAUTH_ISSUER` · `MCP_OAUTH_AUDIENCE` | — | Switch `serve --http` to OAuth 2.1: who signs access tokens, and the public URL of this MCP endpoint that tokens must be issued for. Set together; `https://` (or `http://localhost`). |
+| `MCP_OAUTH_SCOPE` | `mcp:read` | Scope an access token must carry. |
+| `MCP_OAUTH_JWKS_URI` | — | Key-set URL, when the authorization server does not publish standard metadata. |
+| `MCP_RATE_LIMIT_PER_MINUTE` | `120` | Requests per client per minute on the HTTP endpoint (`0` turns it off). |
 | `MCP_HTTP_HOST` | `127.0.0.1` | Interface `serve --http` binds to (`--host` overrides). |
 | `MCP_HTTP_PORT` | `8787` | Port for `serve --http` (`--port` overrides; `0` picks a free one). |
 | `MCP_ALLOWED_ORIGINS` | — | Comma-separated browser origins allowed to call the HTTP server. Non-browser clients send no `Origin` and are unaffected. |
@@ -83,7 +87,8 @@ All configuration is environment variables, read from the process environment fi
 | `npm run embed [-- github\|notion]` | Build or refresh the semantic-search index (needs `VOYAGE_API_KEY`). Incremental: only new or edited items are embedded. `sync --embed` does it right after a sync, and a worker does it every cycle once a key is set. |
 | `npm run tool -- <name> [--flag value]` | Run one tool locally and print its JSON. Without a name it lists the available tools. |
 | `npm run ask -- "<question>"` | Ask the Claude agent (tools run in-process). Tools used, tokens and latency go to stderr. |
-| `npm run serve` | MCP server over stdio. Add `-- --http [--host h] [--port p]` for remote HTTP with bearer authentication. |
+| `npm run serve` | MCP server over stdio. Add `-- --http [--host h] [--port p]` for remote HTTP with bearer-token or OAuth 2.1 authentication. |
+| `npm run auth -- revoke\|unrevoke --client <id> \| --subject <id> \| --token <jti>` · `npm run auth -- list` | Manage the OAuth credentials the HTTP server refuses. Takes effect on the next request. |
 | `npm run eval` | End-to-end agent evals against fixture data. Needs `ANTHROPIC_API_KEY`; costs tokens. |
 | `npm run check` | Everything CI runs: lint, typecheck, tests with a coverage floor. |
 | `npm run build` | Compile to `dist/` (`node dist/main.js <command>`). |
@@ -113,7 +118,9 @@ Run `npm run sync` first — the server only serves what has been synced.
 
 ### Remote MCP over HTTP
 
-For clients that are not on the same machine, the same tools are available over streamable HTTP with bearer-token authentication:
+For clients that are not on the same machine, the same tools are available over streamable HTTP. There are two ways to authenticate; pick one.
+
+**Shared token** — simplest, right for one person or one trusted team:
 
 ```bash
 export MCP_AUTH_TOKEN="$(openssl rand -hex 32)"     # required, at least 24 characters
@@ -128,6 +135,20 @@ curl -s http://127.0.0.1:8787/mcp \
 ```
 
 The server fails closed (it refuses to start without a token), never accepts the token as a command-line argument (it would appear in the process list and shell history), compares it in constant time *before* reading the request body, and validates `Host` and `Origin` as the MCP specification requires against DNS-rebinding. It is stateless (no sessions), POST-only, and caps request bodies. It speaks plain HTTP: for anything other than loopback, put a TLS-terminating reverse proxy in front — a bearer token over cleartext is readable on the network, and the server warns when bound to a non-loopback address. `GET /healthz` is an unauthenticated liveness probe.
+
+**OAuth 2.1** — when several people or clients connect, and you need to know which is which, cut one off, or stop one from hogging the server. The server is an OAuth *resource server*: it validates access tokens issued by an authorization server you already run or rent (Keycloak, Auth0, Entra ID, …) and issues nothing itself.
+
+```bash
+export MCP_OAUTH_ISSUER=https://auth.example.com              # who signs the tokens
+export MCP_OAUTH_AUDIENCE=https://mcp.example.com/mcp         # this endpoint, as clients see it
+npm run serve -- --http
+```
+
+An unauthenticated request gets `401` with `WWW-Authenticate: Bearer resource_metadata="…"`; that URL serves the [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata naming the authorization server, which is how an MCP client (Claude, for one) discovers where to log in. A token is accepted only if its signature verifies against the server's published keys (asymmetric algorithms only — never `none` or `HS*`), it has not expired, `iss` and `aud` match ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707): a token minted for another API is useless here), it carries the required scope, and it identifies a client or user. Failures are answered as RFC 6750 prescribes: `401 invalid_token`, `403 insufficient_scope` (naming the scope to request), and `503` with `Retry-After` when the authorization server is unreachable, because that is not the client's fault.
+
+- **Identity per client.** Rate limits and revocations apply to the token's `client_id` (or `azp`, or `sub`).
+- **Revocation.** A signed token stays valid until it expires wherever its signature checks out, so this server keeps a deny-list in the database: `npm run auth -- revoke --client <id>` (or `--subject`, or `--token <jti>`) refuses it from the next request of a running server, `auth unrevoke` lifts it, `auth list` shows it. Prefer short-lived tokens all the same.
+- **Rate limiting.** A sliding window per client (`MCP_RATE_LIMIT_PER_MINUTE`, default 120), answered with `429` and `Retry-After`, and advertised on every response in `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset`. It applies to the shared token too, as one identity.
 
 ### Docker
 
@@ -237,11 +258,13 @@ npm run test:coverage  # tests with a coverage report
 - **Deletions need a full sync.** Incremental syncs cannot see deletions; run `sync -- --full` (for example nightly) to prune them.
 - **Star counts can lag.** GitHub's `updated_at` may not change when a repository is starred, so an incremental sync can miss pure star changes. Run `sync -- --full` periodically.
 - **Notion search** only returns pages shared with the integration, and its index is eventually consistent. Page bodies are read as plain text (headings, lists, to-dos, quotes, callouts, code, table rows; up to 3 levels of nesting, 400 blocks and 20,000 characters per page); images, files and embedded databases are not. A body is fetched when a page is (re-)synced, so after upgrading run `sync:notion -- --full` once to backfill existing pages.
+- **Rate limits are per process and in memory.** Fine for one node; several instances each enforce the limit on their own. Requests that fail authentication are not counted (they have no identity) — limit those at the reverse proxy, which you need for TLS anyway.
+- **OAuth: JWT access tokens only.** Opaque tokens (RFC 7662 introspection) are not supported, and the key set is fetched over the network on first use, so a restart while the authorization server is down answers `503` until it is back.
 - **SQLite is single-writer.** Fine here (WAL lets the MCP server read during a sync); not a multi-tenant design.
 
 ## Roadmap
 
-OAuth 2.1 for the HTTP transport (per-client identity, revocation, rate limiting) · eval score history and regression tracking.
+Token introspection (RFC 7662) for opaque tokens · a shared rate-limit store for multi-instance deployments · eval score history and regression tracking.
 
 ## Contributing
 

@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { seedFixtures } from '../evals/fixtures.js';
 import { resetDb } from '../testing/helpers.js';
 import { TOOLS } from '../tools/registry.js';
-import { createMcpHttpServer, isLoopback, tokensMatch } from './http.js';
+import { tokensMatch } from './auth/static.js';
+import { createMcpHttpServer, isLoopback } from './http.js';
 
 const TOKEN = 'a-long-random-test-token-0123456789';
 const ORIGIN = 'https://app.example';

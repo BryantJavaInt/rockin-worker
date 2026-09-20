@@ -6,7 +6,7 @@ import { getDb } from '../infra/db/connection.js';
 /** Empties every table so each test starts from a known state (the DB is shared within a test file). */
 export function resetDb(): void {
   getDb().exec(
-    'DELETE FROM repos; DELETE FROM notion_pages; DELETE FROM sync_state; DELETE FROM embeddings;',
+    'DELETE FROM repos; DELETE FROM notion_pages; DELETE FROM sync_state; DELETE FROM embeddings; DELETE FROM revocations;',
   );
 }
 

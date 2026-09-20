@@ -152,6 +152,17 @@ export const MIGRATIONS: readonly string[] = [
   END;
   INSERT INTO notion_fts(notion_fts) VALUES ('rebuild');
   `,
+  // v7: credentials the remote MCP server must refuse even though they are cryptographically
+  // valid — an OAuth client, a user (subject) or one token (jti).
+  `
+  CREATE TABLE revocations (
+    kind TEXT NOT NULL CHECK (kind IN ('client', 'subject', 'token')),
+    value TEXT NOT NULL,
+    revokedAt TEXT NOT NULL,
+    reason TEXT,
+    PRIMARY KEY (kind, value)
+  );
+  `,
 ];
 
 export function migrate(db: DatabaseSync): void {
