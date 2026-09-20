@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { APP } from '../config/meta.js';
 import { describeError } from '../infra/errors.js';
 import { ensureOk, fetchWithRetries } from '../infra/http/client.js';
+import { recordModelCall, stopwatch } from '../infra/telemetry/metrics.js';
 import { SpanKind, traced } from '../infra/telemetry/tracing.js';
 import { type Tool, toInputJsonSchema } from '../tools/define.js';
 
@@ -173,6 +174,7 @@ async function runAgentImpl(question: string, options: AgentOptions): Promise<Ag
     // One "chat" span per model call, following the OpenTelemetry GenAI conventions. Prompts and
     // completions are deliberately NOT recorded: that content is opt-in in the spec, and it
     // would put private repository and page data into your tracing backend.
+    const elapsed = stopwatch();
     const parsed = await traced(
       `chat ${model}`,
       {
@@ -183,27 +185,40 @@ async function runAgentImpl(question: string, options: AgentOptions): Promise<Ag
         ...(temperature !== undefined ? { 'gen_ai.request.temperature': temperature } : {}),
       },
       async (span) => {
-        const response = await ensureOk(
-          await fetchWithRetries(`${baseUrl}/v1/messages`, {
-            method: 'POST',
-            headers: {
-              'x-api-key': apiKey,
-              'anthropic-version': '2023-06-01',
-              'content-type': 'application/json',
-            },
-            body: JSON.stringify({
-              model,
-              max_tokens: maxTokens,
-              system,
-              tools: toolDefs,
-              messages,
-              ...(temperature !== undefined ? { temperature } : {}),
+        let body: z.infer<typeof ResponseSchema>;
+        try {
+          const response = await ensureOk(
+            await fetchWithRetries(`${baseUrl}/v1/messages`, {
+              method: 'POST',
+              headers: {
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({
+                model,
+                max_tokens: maxTokens,
+                system,
+                tools: toolDefs,
+                messages,
+                ...(temperature !== undefined ? { temperature } : {}),
+              }),
             }),
-          }),
-          'Anthropic API',
-        );
-
-        const body = ResponseSchema.parse(await response.json());
+            'Anthropic API',
+          );
+          body = ResponseSchema.parse(await response.json());
+        } catch (err) {
+          recordModelCall(model, elapsed());
+          throw err;
+        }
+        recordModelCall(model, elapsed(), {
+          // Per the GenAI conventions, input tokens include the cached ones.
+          inputTokens:
+            body.usage.input_tokens +
+            (body.usage.cache_read_input_tokens ?? 0) +
+            (body.usage.cache_creation_input_tokens ?? 0),
+          outputTokens: body.usage.output_tokens,
+        });
         span.setAttributes({
           'gen_ai.response.finish_reasons': body.stop_reason ? [body.stop_reason] : [],
           'gen_ai.usage.input_tokens': body.usage.input_tokens,

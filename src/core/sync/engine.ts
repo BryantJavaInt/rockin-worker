@@ -5,6 +5,7 @@ import { loadConfig } from '../../config/index.js';
 import { withTransaction } from '../../infra/db/connection.js';
 import { describeError } from '../../infra/errors.js';
 import { logSyncRun, type RunLogEntry } from '../../infra/logging/run-log.js';
+import { recordSyncRun, stopwatch } from '../../infra/telemetry/metrics.js';
 import { markError, traced } from '../../infra/telemetry/tracing.js';
 import type { Page, SyncAdapter } from './adapter.js';
 import { getSyncState, saveSyncState } from './state.js';
@@ -303,7 +304,9 @@ export function runSync<T>(
     `sync ${adapter.source}`,
     { 'sync.source': adapter.source, 'sync.full': options.full ?? false },
     async (span) => {
+      const elapsed = stopwatch();
       const summary = await runSyncImpl(adapter, options);
+      recordSyncRun(adapter.source, elapsed(), summary);
 
       span.setAttributes({
         'sync.fetched': summary.fetched,

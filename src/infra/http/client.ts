@@ -7,6 +7,7 @@
 // Diagnostics go to stderr: when running as an MCP server, stdout carries the
 // protocol and must never be polluted.
 
+import { recordHttpRequest, stopwatch } from '../telemetry/metrics.js';
 import { markError, SpanKind, traced } from '../telemetry/tracing.js';
 
 export class HttpError extends Error {
@@ -183,19 +184,31 @@ export function fetchWithRetries(
 ): Promise<Response> {
   const method = options.method ?? 'GET';
   const target = describeTarget(url);
+  const elapsed = stopwatch();
 
   return traced(
     `HTTP ${method}`,
     { 'http.request.method': method, 'url.full': target.full, 'server.address': target.host },
     async (span) => {
       let attempts = 0;
-      const response = await fetchWithRetriesImpl(url, {
-        ...options,
-        onAttempt: (attempt) => {
-          attempts = attempt;
-          options.onAttempt?.(attempt);
-        },
-      });
+      let response: Response;
+      try {
+        response = await fetchWithRetriesImpl(url, {
+          ...options,
+          onAttempt: (attempt) => {
+            attempts = attempt;
+            options.onAttempt?.(attempt);
+          },
+        });
+      } catch (err) {
+        recordHttpRequest(elapsed(), {
+          method,
+          host: target.host,
+          error: err instanceof Error ? err.name : 'error',
+        });
+        throw err;
+      }
+      recordHttpRequest(elapsed(), { method, host: target.host, status: response.status });
 
       span.setAttribute('http.response.status_code', response.status);
       if (attempts > 1) span.setAttribute('http.request.resend_count', attempts - 1);

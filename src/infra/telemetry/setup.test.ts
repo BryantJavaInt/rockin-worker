@@ -1,44 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Bryant Giorgini
 
-import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { context, trace } from '@opentelemetry/api';
+import { context, metrics, trace } from '@opentelemetry/api';
 import { afterEach, describe, expect, it } from 'vitest';
-import { initTelemetry, otlpTraceConfig, parseOtlpHeaders } from './setup.js';
+import { startCollector } from '../../testing/collector.js';
+import { initTelemetry, metricExportIntervalMs, otlpConfig, parseOtlpHeaders } from './setup.js';
 import { traced } from './tracing.js';
-
-type Received = { path: string; contentType: string; body: string };
-
-/** A tiny OTLP/HTTP collector: records whatever an exporter posts to it. */
-async function startCollector() {
-  const received: Received[] = [];
-  const headers: Array<Record<string, string | string[] | undefined>> = [];
-  const server: Server = createServer((req: IncomingMessage, res) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('end', () => {
-      headers.push(req.headers);
-      received.push({
-        path: req.url ?? '',
-        contentType: String(req.headers['content-type']),
-        body: Buffer.concat(chunks).toString('utf8'),
-      });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('{}');
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as { port: number };
-  return {
-    received,
-    headers,
-    endpoint: `http://127.0.0.1:${port}`,
-    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
-}
 
 afterEach(() => {
   trace.disable();
+  metrics.disable();
   context.disable();
 });
 
@@ -91,15 +62,38 @@ describe('initTelemetry', () => {
 
 describe('OTLP configuration', () => {
   it('appends /v1/traces to the general endpoint but uses a traces endpoint as-is', () => {
-    expect(otlpTraceConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318/' }).url).toBe(
-      'http://collector:4318/v1/traces',
+    expect(
+      otlpConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318/' }, 'traces')?.url,
+    ).toBe('http://collector:4318/v1/traces');
+    expect(
+      otlpConfig(
+        {
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'http://ignored:4318',
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://traces.example.com/custom/path',
+        },
+        'traces',
+      )?.url,
+    ).toBe('https://traces.example.com/custom/path');
+  });
+
+  it('derives the metrics endpoint the same way, and reports none when nothing is configured', () => {
+    expect(otlpConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://c:4318' }, 'metrics')?.url).toBe(
+      'http://c:4318/v1/metrics',
     );
     expect(
-      otlpTraceConfig({
-        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://ignored:4318',
-        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://traces.example.com/custom/path',
-      }).url,
-    ).toBe('https://traces.example.com/custom/path');
+      otlpConfig({ OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://m.example.com/x' }, 'metrics')
+        ?.url,
+    ).toBe('https://m.example.com/x');
+    // A traces-only endpoint must not turn metrics on.
+    expect(otlpConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://t' }, 'metrics')).toBeNull();
+    expect(otlpConfig({}, 'traces')).toBeNull();
+  });
+
+  it('reads the metric export interval, falling back to the 60 s default', () => {
+    expect(metricExportIntervalMs({ OTEL_METRIC_EXPORT_INTERVAL: '5000' })).toBe(5000);
+    expect(metricExportIntervalMs({})).toBe(60_000);
+    expect(metricExportIntervalMs({ OTEL_METRIC_EXPORT_INTERVAL: 'soon' })).toBe(60_000);
+    expect(metricExportIntervalMs({ OTEL_METRIC_EXPORT_INTERVAL: '5' })).toBe(60_000);
   });
 
   it('parses the standard header list, keeping "=" inside values and decoding escapes', () => {
@@ -114,11 +108,14 @@ describe('OTLP configuration', () => {
 
   it('prefers the traces-specific headers', () => {
     expect(
-      otlpTraceConfig({
-        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://c',
-        OTEL_EXPORTER_OTLP_HEADERS: 'a=general',
-        OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'a=traces',
-      }).headers,
+      otlpConfig(
+        {
+          OTEL_EXPORTER_OTLP_ENDPOINT: 'http://c',
+          OTEL_EXPORTER_OTLP_HEADERS: 'a=general',
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'a=traces',
+        },
+        'traces',
+      )?.headers,
     ).toEqual({ a: 'traces' });
   });
 

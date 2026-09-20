@@ -24,7 +24,7 @@ flowchart TB
 | `infra/db/` | Connection (WAL), `withTransaction`, versioned migrations (`PRAGMA user_version`). | config |
 | `infra/http/` | The only outbound HTTP path: timeout, retries, `Retry-After`, typed `HttpError`. | config |
 | `infra/logging/` | Append-only JSONL run history. | config |
-| `infra/telemetry/` | OpenTelemetry: the `traced` helper used across the code base, and the optional OTLP exporter. | config |
+| `infra/telemetry/` | OpenTelemetry: the `traced` helper and the metric recorders used across the code base, and the optional OTLP exporters. | config |
 | `infra/embeddings/` | The `EmbeddingProvider` port and its Voyage implementation. | config, infra |
 | `infra/errors.ts` | `describeError`: one readable message for any thrown value. | — |
 | `core/sync/` | The `SyncAdapter` port, the sync engine (pagination, watermark, transactions, summary) and per-source sync state. | infra |
@@ -110,6 +110,8 @@ Migrations are append-only SQL in `infra/db/migrations.ts`; version `n` is store
 **Remote MCP: stateless streamable HTTP with a bearer token, not OAuth.** The tools are read-only over a local snapshot, so a stateless transport (a fresh server and transport per request) costs nothing and removes session hijacking, cleanup and sticky routing. A single shared bearer token — checked in constant time before the body is read, fail-closed, env-only — is the right size for a personal, single-tenant server. What it does not give is per-client identity, revocation or rate limiting; a multi-user deployment would move to OAuth 2.1 as an MCP resource server, which is the roadmap item. The MCP specification's DNS-rebinding rules are enforced (`Host` on loopback bindings, an `Origin` allow-list).
 
 **OpenTelemetry via the API only, exporter opt-in.** Code is instrumented against `@opentelemetry/api`, which is a no-op until an application registers an SDK — so instrumentation is free by default, and a `traced()` wrapper preserves what it wraps (a synchronous function stays synchronous, a throw stays a throw), so it can never change behaviour. The SDK and OTLP exporter are imported dynamically, only when a collector endpoint is configured, and are given the URL and headers explicitly (left alone, the exporter reads `process.env` and ignores the environment it was handed). Telemetry is best-effort in both directions: a dead collector can neither hang the exit (bounded flush) nor fail the program (caught). Spans follow the GenAI semantic conventions, and prompts, completions and tool output are deliberately not recorded — synced repository and page data must not end up in a tracing backend.
+
+**Metrics need one extra step.** The API has a proxy *tracer* that starts delegating once a provider is registered, but no proxy *meter*: an instrument created before `initTelemetry` registers its provider stays a no-op forever. Instruments are therefore built lazily and rebuilt whenever the global meter provider changes (a test covers registering one late). Attributes are restricted to fixed, low-cardinality values so untrusted input cannot inflate a metrics backend, and shutdown forces a final collection so short-lived CLI runs still report.
 
 **Structured tool output.** Tools declare an output schema derived from the same Zod types as their queries; the MCP server advertises it and returns `structuredContent` next to the text content (kept for hosts that ignore structured output). A contract test keeps the schema and the real output in agreement.
 
