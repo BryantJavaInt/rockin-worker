@@ -40,6 +40,19 @@ export function readRetryAfterMs(response: Response): number | null {
   return null;
 }
 
+/**
+ * Primary rate limits (GitHub): a 403/429 with `X-RateLimit-Remaining: 0` and the epoch-seconds
+ * time the window resets in `X-RateLimit-Reset`. These responses carry no `Retry-After`.
+ */
+export function readRateLimitResetMs(response: Response): number | null {
+  if (response.headers.get('x-ratelimit-remaining') !== '0') return null;
+
+  const resetSeconds = Number(response.headers.get('x-ratelimit-reset'));
+  if (!Number.isFinite(resetSeconds) || resetSeconds <= 0) return null;
+
+  return Math.max(0, resetSeconds * 1000 - Date.now());
+}
+
 export type FetchWithRetriesOptions = {
   headers?: Record<string, string>;
   method?: string;
@@ -47,12 +60,21 @@ export type FetchWithRetriesOptions = {
   maxAttempts?: number;
   /** Per-attempt timeout. A hung connection is treated like a network error. */
   timeoutMs?: number;
-  /** Which HTTP statuses are worth retrying. Defaults to 429 and any 5xx. */
-  isRetryable?: (status: number) => boolean;
+  /**
+   * Longest wait the server may ask for (Retry-After / rate-limit reset) before we give up
+   * and return the response instead. A CLI must not sleep for an hour. Default 60s.
+   */
+  maxRetryWaitMs?: number;
+  /** Which responses are worth retrying. Defaults to 429, any 5xx, and a rate-limited 403. */
+  isRetryable?: (response: Response) => boolean;
 };
 
-const defaultIsRetryable = (status: number) => status === 429 || status >= 500;
+const defaultIsRetryable = (response: Response) =>
+  response.status === 429 ||
+  response.status >= 500 ||
+  (response.status === 403 && readRateLimitResetMs(response) !== null);
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_MAX_RETRY_WAIT_MS = 60_000;
 
 /**
  * Performs a request, retrying transient failures:
@@ -73,6 +95,7 @@ export async function fetchWithRetries(
     body,
     maxAttempts = 3,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    maxRetryWaitMs = DEFAULT_MAX_RETRY_WAIT_MS,
     isRetryable = defaultIsRetryable,
   } = options;
 
@@ -105,13 +128,23 @@ export async function fetchWithRetries(
 
     clearTimeout(timer);
 
-    if (response.ok || !isRetryable(response.status) || isLastAttempt) {
+    if (response.ok || !isRetryable(response) || isLastAttempt) {
       return response;
     }
 
-    const retryAfterMs = readRetryAfterMs(response);
-    const waitMs = retryAfterMs ?? 1000 * attempt + Math.random() * 500;
-    const reason = retryAfterMs !== null ? 'server Retry-After' : 'generic backoff';
+    // A wait the server asked for (Retry-After, or the rate-limit window reset) wins over
+    // our own guess — unless it is longer than we are willing to block for.
+    const serverWaitMs = readRetryAfterMs(response) ?? readRateLimitResetMs(response);
+    if (serverWaitMs !== null && serverWaitMs > maxRetryWaitMs) {
+      console.warn(
+        `HTTP ${response.status} from ${url} — server asked to wait ${Math.round(serverWaitMs / 1000)}s, ` +
+          `more than the ${Math.round(maxRetryWaitMs / 1000)}s limit; giving up.`,
+      );
+      return response;
+    }
+
+    const waitMs = serverWaitMs ?? 1000 * attempt + Math.random() * 500;
+    const reason = serverWaitMs !== null ? 'server-directed wait' : 'generic backoff';
 
     console.warn(
       `HTTP ${response.status} from ${url} — retrying in ${waitMs.toFixed(0)}ms ` +

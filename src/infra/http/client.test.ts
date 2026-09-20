@@ -2,7 +2,13 @@
 // Copyright (c) 2026 Bryant Giorgini
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureOk, fetchWithRetries, HttpError, readRetryAfterMs } from './client.js';
+import {
+  ensureOk,
+  fetchWithRetries,
+  HttpError,
+  readRateLimitResetMs,
+  readRetryAfterMs,
+} from './client.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -167,5 +173,90 @@ describe('ensureOk', () => {
     expect(error).toBeInstanceOf(HttpError);
     expect(error).toMatchObject({ status: 429 });
     expect((error as Error).message).toMatch(/Test API responded 429: rate limited/);
+  });
+});
+
+const inSeconds = (s: number) => String(Math.ceil(Date.now() / 1000) + s);
+const limited = (status: number, resetInSeconds: number) =>
+  new Response(null, {
+    status,
+    headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': inSeconds(resetInSeconds) },
+  });
+
+describe('rate limits', () => {
+  it('readRateLimitResetMs reads the reset window only when the quota is exhausted', () => {
+    expect(readRateLimitResetMs(limited(403, 10))).toBeGreaterThan(8_000);
+    expect(
+      readRateLimitResetMs(
+        new Response(null, {
+          headers: { 'x-ratelimit-remaining': '42', 'x-ratelimit-reset': inSeconds(10) },
+        }),
+      ),
+    ).toBeNull();
+    expect(readRateLimitResetMs(new Response(null))).toBeNull();
+    expect(
+      readRateLimitResetMs(
+        new Response(null, {
+          headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': 'soon' },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('waits out a GitHub primary rate limit (403 + X-RateLimit-Reset) and retries', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(limited(403, 2))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const promise = fetchWithRetries('https://example.com');
+    await vi.advanceTimersByTimeAsync(3_100);
+
+    expect((await promise).status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry an ordinary 403 (permissions), only a rate-limited one', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect((await fetchWithRetries('https://example.com')).status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up immediately when the server asks for longer than maxRetryWaitMs', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 429, headers: { 'Retry-After': '3600' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const response = await fetchWithRetries('https://example.com', { maxAttempts: 5 });
+
+    expect(response.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no sleeping for an hour
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('giving up'));
+  });
+
+  it('gives up when the rate-limit window resets too far away, and honors a raised limit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(limited(403, 1800));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await fetchWithRetries('https://example.com');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    fetchMock.mockClear();
+    fetchMock
+      .mockResolvedValueOnce(limited(403, 1800))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    const promise = fetchWithRetries('https://example.com', { maxRetryWaitMs: 3_600_000 });
+    await vi.advanceTimersByTimeAsync(1_801_000);
+
+    expect((await promise).status).toBe(200);
   });
 });
