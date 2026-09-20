@@ -22,7 +22,13 @@ const MAX_TOOL_OUTPUT_CHARS = 20_000;
 const ResponseSchema = z.object({
   content: z.array(z.unknown()),
   stop_reason: z.string().nullable(),
-  usage: z.object({ input_tokens: z.number(), output_tokens: z.number() }),
+  usage: z.object({
+    input_tokens: z.number(),
+    output_tokens: z.number(),
+    // Present when prompt caching is active; the API may send null or omit them.
+    cache_creation_input_tokens: z.number().nullish(),
+    cache_read_input_tokens: z.number().nullish(),
+  }),
 });
 const TextBlock = z.object({ type: z.literal('text'), text: z.string() });
 const ToolUseBlock = z.object({
@@ -41,15 +47,30 @@ export type AgentOptions = {
   maxTokens?: number;
   temperature?: number;
   baseUrl?: string;
+  /**
+   * Mark the system prompt and tool definitions as cacheable (default true). They are resent
+   * unchanged on every turn of the loop, so a cache hit cuts their cost and latency. Prompts
+   * below the model's minimum cacheable length are simply not cached — never an error.
+   */
+  promptCaching?: boolean;
 };
 
 export type ToolCall = { name: string; input: unknown; isError: boolean };
+
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  /** Input tokens served from the prompt cache (billed at a fraction of normal input). */
+  cacheReadTokens: number;
+  /** Input tokens written to the prompt cache on this run. */
+  cacheCreationTokens: number;
+};
 
 export type AgentResult = {
   answer: string;
   toolCalls: ToolCall[];
   turns: number;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: TokenUsage;
   latencyMs: number;
   /** 'end_turn' is a normal finish; 'max_turns' means the loop guard tripped. */
   stopReason: string;
@@ -108,20 +129,33 @@ export async function runAgent(question: string, options: AgentOptions): Promise
     maxTokens = 1024,
     temperature,
     baseUrl = 'https://api.anthropic.com',
+    promptCaching = true,
   } = options;
 
   const startedAt = Date.now();
   const messages: Array<{ role: 'user' | 'assistant'; content: unknown }> = [
     { role: 'user', content: question },
   ];
-  const toolDefs = tools.map((tool) => ({
+  const cacheControl = { cache_control: { type: 'ephemeral' } } as const;
+  // A cache breakpoint on the last tool caches everything before it (all tools + the system
+  // prompt): both are identical on every turn, so they are the ideal cacheable prefix.
+  const toolDefs = tools.map((tool, index) => ({
     name: tool.name,
     description: tool.description,
     input_schema: toInputJsonSchema(tool),
+    ...(promptCaching && index === tools.length - 1 ? cacheControl : {}),
   }));
+  const system = promptCaching
+    ? [{ type: 'text', text: SYSTEM_PROMPT, ...cacheControl }]
+    : SYSTEM_PROMPT;
 
   const toolCalls: ToolCall[] = [];
-  const usage = { inputTokens: 0, outputTokens: 0 };
+  const usage: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+  };
 
   const finish = (answer: string, turns: number, stopReason: string): AgentResult => ({
     answer,
@@ -144,7 +178,7 @@ export async function runAgent(question: string, options: AgentOptions): Promise
         body: JSON.stringify({
           model,
           max_tokens: maxTokens,
-          system: SYSTEM_PROMPT,
+          system,
           tools: toolDefs,
           messages,
           ...(temperature !== undefined ? { temperature } : {}),
@@ -156,6 +190,8 @@ export async function runAgent(question: string, options: AgentOptions): Promise
     const parsed = ResponseSchema.parse(await response.json());
     usage.inputTokens += parsed.usage.input_tokens;
     usage.outputTokens += parsed.usage.output_tokens;
+    usage.cacheReadTokens += parsed.usage.cache_read_input_tokens ?? 0;
+    usage.cacheCreationTokens += parsed.usage.cache_creation_input_tokens ?? 0;
     messages.push({ role: 'assistant', content: parsed.content });
 
     const toolUses = parsed.content.flatMap((block) => {

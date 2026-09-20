@@ -139,9 +139,14 @@ async function askCommand(args: string[]): Promise<number> {
 
   console.log(result.answer || '(no answer)');
   const called = result.toolCalls.map((c) => c.name).join(', ') || 'none';
+  const { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens } = result.usage;
+  const cache =
+    cacheReadTokens + cacheCreationTokens > 0
+      ? ` (prompt cache: ${cacheReadTokens} read / ${cacheCreationTokens} written)`
+      : '';
   console.error(
     `\n— tools: ${called} · turns: ${result.turns} · ` +
-      `tokens: ${result.usage.inputTokens} in / ${result.usage.outputTokens} out · ${result.latencyMs}ms`,
+      `tokens: ${inputTokens} in / ${outputTokens} out${cache} · ${result.latencyMs}ms`,
   );
 
   return result.stopReason === 'max_turns' ? 1 : 0;

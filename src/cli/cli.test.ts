@@ -232,3 +232,27 @@ describe('cli: sync --every (worker mode)', () => {
     expect(await exit).toBe(0);
   });
 });
+
+describe('cli: ask reports prompt-cache usage', () => {
+  it('shows cache reads and writes when the API reports them', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-test');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          usage: {
+            input_tokens: 4,
+            output_tokens: 2,
+            cache_read_input_tokens: 900,
+            cache_creation_input_tokens: 0,
+          },
+        }),
+      ),
+    );
+
+    expect(await run(['ask', 'hello'])).toBe(0);
+    expect(stderr()).toMatch(/prompt cache: 900 read \/ 0 written/);
+  });
+});

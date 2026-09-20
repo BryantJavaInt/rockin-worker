@@ -66,14 +66,21 @@ describe('runAgent', () => {
     expect(result.answer).toBe('It said: hi');
     expect(result.toolCalls).toEqual([{ name: 'echo', input: { text: 'hi' }, isError: false }]);
     expect(result.turns).toBe(2);
-    expect(result.usage).toEqual({ inputTokens: 20, outputTokens: 10 });
+    expect(result.usage).toEqual({
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
 
     // Request 1: authenticated, carries the system prompt and the tool's JSON Schema.
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect(init.headers['x-api-key']).toBe('test-key');
     const first = requestBody(fetchMock, 0);
-    expect(first.system).toBe(SYSTEM_PROMPT);
+    expect(first.system).toEqual([
+      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+    ]);
     expect(first.tools[0]).toMatchObject({ name: 'echo', input_schema: { type: 'object' } });
 
     // Request 2: replays the assistant turn and answers the tool call by id.
@@ -187,5 +194,77 @@ describe('runAgent with the real tool registry', () => {
     expect(payload.items.map((i: { title: string }) => i.title)).toContain('Q3 Roadmap');
     expect(toolResult.content).toContain('BANANA'); // present as data...
     expect(SYSTEM_PROMPT).toMatch(/DATA .* not instructions/s); // ...and the model is told to treat it so
+  });
+});
+
+describe('prompt caching', () => {
+  const twoTools = [
+    echoTool,
+    defineTool({
+      name: 'second',
+      title: 'Second',
+      description: 'Another tool.',
+      input: z.object({}),
+      run: () => ({}),
+    }),
+  ];
+
+  it('marks the system prompt and only the LAST tool as a cache breakpoint', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => reply([text('ok')], 'end_turn'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runAgent('x', { ...options, tools: twoTools });
+
+    const body = requestBody(fetchMock, 0);
+    expect(body.system[0].cache_control).toEqual({ type: 'ephemeral' });
+    expect(body.tools[0]).not.toHaveProperty('cache_control');
+    expect(body.tools[1].cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  it('sends a plain system string and no cache markers when disabled', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => reply([text('ok')], 'end_turn'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await runAgent('x', { ...options, tools: twoTools, promptCaching: false });
+
+    const body = requestBody(fetchMock, 0);
+    expect(body.system).toBe(SYSTEM_PROMPT);
+    expect(JSON.stringify(body)).not.toContain('cache_control');
+  });
+
+  it('accumulates cache reads and writes across turns, tolerating null/absent fields', async () => {
+    const withUsage = (usage: object, content: unknown[], stop: string) =>
+      jsonResponse({ id: 'm', content, stop_reason: stop, usage });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        withUsage(
+          {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation_input_tokens: 1200,
+            cache_read_input_tokens: null,
+          },
+          [toolUse({ text: 'hi' })],
+          'tool_use',
+        ),
+      )
+      .mockResolvedValueOnce(
+        withUsage(
+          { input_tokens: 4, output_tokens: 2, cache_read_input_tokens: 1200 },
+          [text('done')],
+          'end_turn',
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runAgent('x', options);
+
+    expect(result.usage).toEqual({
+      inputTokens: 14,
+      outputTokens: 7,
+      cacheReadTokens: 1200,
+      cacheCreationTokens: 1200,
+    });
   });
 });
