@@ -55,24 +55,24 @@
     "eval": "tsx src/evals/run.ts"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
+    "@biomejs/biome": "^2.5.15",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.6.4",
     "@vitest/coverage-v8": "^4.1.11",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-metrics-otlp-http": "^0.222.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
-    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
+    "@opentelemetry/resources": "^2.12.0",
     "@opentelemetry/sdk-metrics": "^2.11.0",
-    "@opentelemetry/sdk-trace-node": "^2.11.0",
+    "@opentelemetry/sdk-trace-node": "^2.12.0",
     "dotenv": "^17.4.2",
     "jose": "^6.2.12",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   }
 }
